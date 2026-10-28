@@ -1,6 +1,8 @@
 # flibusta-telegram-bot
 
 [RU](README.md) · **EN** · [中文](README.zh.md) · [Español](README.es.md) · [Français](README.fr.md)
+[![VirusTotal](https://img.shields.io/badge/VirusTotal-0%2F75_clean-brightgreen)](https://www.virustotal.com/gui/file/ec9224ec99c3adfa548d41b6c5fe4f53535d39a16615f7f67ece08fa62f77ce4)
+
 
 A Telegram bot for searching and downloading books from [Flibusta](https://flibusta.is).
 

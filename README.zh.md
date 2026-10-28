@@ -1,6 +1,8 @@
 # flibusta-telegram-bot
 
 [RU](README.md) · [EN](README.en.md) · **中文** · [Español](README.es.md) · [Français](README.fr.md)
+[![VirusTotal](https://img.shields.io/badge/VirusTotal-0%2F75_clean-brightgreen)](https://www.virustotal.com/gui/file/ec9224ec99c3adfa548d41b6c5fe4f53535d39a16615f7f67ece08fa62f77ce4)
+
 
 在 [Flibusta](https://flibusta.is) 上搜索并下载图书的 Telegram 机器人。
 
