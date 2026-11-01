@@ -116,7 +116,7 @@ describe("bot handlers", () => {
     const o = mkOrchestrator(books);
     const h = createBotHandlers(cfg as any, o as any, mkAnalytics() as any, mkDownloader() as any, mkFlibusta() as any);
     const ctx = mkCtx({ callbackQuery: { data: "book:0" } });
-    // simulerem сохранённый результат поиска
+    // simulate a saved search result
     (h as any).lastResults.set(111, books);
     await h.onCallback(ctx);
     expect(ctx.editMessageText).toHaveBeenCalled();
@@ -148,7 +148,7 @@ describe("bot handlers", () => {
     const d = {
       fetchThen: vi.fn().mockImplementation(async (_url: string, _filename: string, onf: any) => {
         calls++;
-        if (calls === 1) await pending; // первый клик висит, пока мы не зарезолвим
+        if (calls === 1) await pending; // first click hangs until we resolve
         const fs = await import("node:fs/promises");
         const f = "./tmp-fake-test-file.fb2";
         await fs.writeFile(f, "x");
@@ -160,7 +160,7 @@ describe("bot handlers", () => {
     (h as any).lastResults.set(111, books);
 
     h.onCallback(mkCtx({ callbackQuery: { data: "fmt:0:fb2" } }));
-    await new Promise((r) => setImmediate(r)); // пусть первый клик дойдёт до зависшего await
+    await new Promise((r) => setImmediate(r)); // let the first click reach the hanging await
 
     const ctx2 = mkCtx({ callbackQuery: { data: "fmt:0:fb2" } });
     await h.onCallback(ctx2);
@@ -180,10 +180,10 @@ describe("bot handlers", () => {
     const h = createBotHandlers(cfg as any, mkOrchestrator(books) as any, a as any, d as any, fl as any);
     (h as any).lastResults.set(111, books);
 
-    await h.onCallback(mkCtx({ callbackQuery: { data: "fmt:0:fb2" } })); // запуск фоновой загрузки
-    await h.idle(); // скачивание завершено, кулдаун взведён, inflight снят
+    await h.onCallback(mkCtx({ callbackQuery: { data: "fmt:0:fb2" } })); // start the background download
+    await h.idle(); // download finished, cooldown armed, inflight cleared
     const ctx2 = mkCtx({ callbackQuery: { data: "fmt:0:fb2" } });
-    await h.onCallback(ctx2); // в пределах кулдауна -> отброс
+    await h.onCallback(ctx2); // within the cooldown -> rejected
     expect(d.fetchThen).toHaveBeenCalledTimes(1);
     expect(ctx2.reply).toHaveBeenCalled();
     expect(ctx2.replyWithDocument).not.toHaveBeenCalled();
@@ -203,7 +203,7 @@ describe("bot handlers", () => {
   it("runDownload: send → edit(прогресс) → edit(Отправляю) → delete на успехе", async () => {
     const books = [{ title: "Шерлок", author: "Конан Дойль", book_id: 1, formats: ["fb2"], downloads: [{ link: "/b/1/fb2", format: "fb2" }] }];
     const m = mkMessenger();
-    // downloader, который реально дёргает onProgress с растущим downloaded.
+    // a downloader that actually drives onProgress with a growing downloaded.
     const d = {
       fetchThen: vi.fn().mockImplementation(async (_url: string, _filename: string, onf: any, _fmt: string, onProgress: any) => {
         onProgress?.({ downloaded: 3, total: 5 });
@@ -221,12 +221,12 @@ describe("bot handlers", () => {
     await h.onCallback(ctx);
     await h.idle();
     expect(m.send).toHaveBeenCalledWith(111, expect.stringContaining("Шерлок"));
-    // прогресс правит статус на «Скачано …%»
+    // progress edits the status to "Downloaded …%"
     expect(m.edit).toHaveBeenCalledWith({ chatId: 111, msgId: 500 }, expect.stringMatching(/^Скачано \d+% /));
-    // перед отправкой документа — «Отправляю…»
+    // before sending the document — "Sending…"
     expect(m.edit).toHaveBeenCalledWith({ chatId: 111, msgId: 500 }, "Отправляю…");
     expect(ctx.replyWithDocument).toHaveBeenCalled();
-    // успех — статус удалён
+    // success — status deleted
     expect(m.delete).toHaveBeenCalledWith({ chatId: 111, msgId: 500 });
   });
 
@@ -248,7 +248,7 @@ describe("bot handlers", () => {
   it("runSearch: быстрый путь (кэш/быстрый промах) — без статус-сообщения, только reply", async () => {
     const books = [{ title: "Шерлок", author: "Конан Дойль", formats: ["fb2"], downloads: [] }];
     const m = mkMessenger();
-    const o = mkOrchestrator(books); // резолвится мгновенно — lazy-таймер не успевает
+    const o = mkOrchestrator(books); // resolves instantly — the lazy timer has no time to fire
     const h = createBotHandlers(cfg as any, o as any, mkAnalytics() as any, mkDownloader() as any, mkFlibusta() as any, m as any);
     const ctx = mkCtx();
     await h.onText(ctx);
@@ -263,7 +263,7 @@ describe("bot handlers", () => {
     const o = {
       search: vi.fn().mockImplementation(async (_q: string, _n: number, onProgress: any) => {
         onProgress?.({ kind: "parsing" });
-        await new Promise((r) => setTimeout(r, 750)); // > 700 мс → lazy-статус создаётся
+        await new Promise((r) => setTimeout(r, 750)); // > 700 ms → the lazy status gets created
         onProgress?.({ kind: "searching" });
         return { books, degraded: false };
       }),
@@ -272,13 +272,13 @@ describe("bot handlers", () => {
     const ctx = mkCtx();
     await h.onText(ctx);
     await h.idle();
-    // статус создан с первой фазой
+    // status created with the first phase
     expect(m.send).toHaveBeenCalledWith(111, "Разбираю запрос…");
-    // смена фазы правит статус
+    // a phase change edits the status
     expect(m.edit).toHaveBeenCalledWith({ chatId: 111, msgId: 500 }, "Ищу у себя в библиотеке…");
-    // финальный edit заменяет статус на список книг (с клавиатурой)
+    // the final edit replaces the status with the book list (with keyboard)
     expect(m.edit).toHaveBeenCalledWith({ chatId: 111, msgId: 500 }, expect.any(String), expect.objectContaining({ parse_mode: "HTML" }));
-    // отдельного reply нет — список лёг в то же сообщение
+    // no separate reply — the list went into the same message
     expect(ctx.reply).not.toHaveBeenCalled();
   });
 
@@ -307,9 +307,9 @@ describe("bot handlers", () => {
     const o = {
       search: vi.fn().mockImplementation(async (q: string, _n: number, onProgress: any) => {
         onProgress?.({ kind: "parsing" });
-        // A висит дольше lazy-окна (700 мс) — успевает создать статус-сообщение;
-        // B завершается быстро и обгоняет. Воспроизводит баг «книги заменились
-        // на предыдущий»: без race-защиты A затёр бы lastResults своим списком.
+        // A hangs longer than the lazy window (700 ms) — it manages to create a status message;
+        // B finishes fast and overtakes it. Reproduces the "books replaced
+        // with previous" bug: without the race guard A would clobber lastResults with its list.
         if (q.includes("медленный")) await new Promise((r) => setTimeout(r, 900));
         else await new Promise((r) => setTimeout(r, 50));
         onProgress?.({ kind: "searching" });
@@ -319,13 +319,13 @@ describe("bot handlers", () => {
     const h = createBotHandlers(cfg as any, o as any, mkAnalytics() as any, mkDownloader() as any, mkFlibusta() as any, m as any);
     const ctxA = mkCtx({ message: { text: "медленный запрос" } });
     const ctxB = mkCtx({ message: { text: "быстрый запрос" } });
-    h.onText(ctxA); // A в фоне
-    await new Promise((r) => setTimeout(r, 120)); // B стартует, когда A уже висит
-    h.onText(ctxB); // B обгонит
-    await h.idle(); // дождаться обоих
-    // последний результат — за новым запросом B; старый A выброшен race-защитой
+    h.onText(ctxA); // A in background
+    await new Promise((r) => setTimeout(r, 120)); // B starts when A is already hanging
+    h.onText(ctxB); // B will overtake
+    await h.idle(); // wait for both
+    // the last result belongs to the new query B; the old A was discarded by the race guard
     expect(h.lastResults.get(111)).toBe(booksB);
-    // статус-сообщение висящего старого запроса удалено, а не «ожило» старым списком
+    // the hung old request's status message was deleted, not "revived" with the old list
     expect(m.delete).toHaveBeenCalledWith({ chatId: 111, msgId: 500 });
   });
 });

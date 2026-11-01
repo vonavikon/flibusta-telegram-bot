@@ -25,9 +25,9 @@ export type HandlerCtx = {
   editMessageText(text: string, extra?: unknown): Promise<unknown>;
 };
 
-// Семафор: ограничивает число параллельных дорогих операций. При неблокирующих
-// обработчиках без него спам-очередь выливается в десяток одновременных вызовов
-// flibusta/LLM — риск троттлинга и бана upstream.
+// Semaphore: caps the number of concurrent expensive operations. With
+// non-blocking handlers and no cap, a spam queue turns into a dozen simultaneous
+// flibusta/LLM calls — risk of upstream throttling and bans.
 function makeSemaphore(max: number) {
   let active = 0;
   const queue: (() => void)[] = [];
@@ -38,7 +38,7 @@ function makeSemaphore(max: number) {
     },
     release(): void {
       const next = queue.shift();
-      if (next) next(); // слот переходит ждущему, active не меняется
+      if (next) next(); // slot goes to the next waiter, active stays unchanged
       else active--;
     },
   };
@@ -53,42 +53,42 @@ export function createBotHandlers(
   messenger?: StatusMessenger,
   royallib?: Royallib,
 ) {
-  // Статус-сообщения (прогресс скачивания, фазы поиска). Опционально: тестам,
-  // которым статус не нужен, передавать фейк не требуется — no-op по умолчанию.
+  // Status messages (download progress, search phases). Optional: tests that
+  // don't need status don't have to pass a fake — no-op by default.
   const msg: StatusMessenger = messenger ?? {
     async send() { return { chatId: 0, msgId: 0 }; },
     async edit() {},
     async delete() {},
   };
-  // Кеш последних результатов поиска по user_id (в памяти, TTL через неактивность — для MVP достаточно)
+  // Cache of last search results per user_id (in memory, TTL via inactivity — good enough for MVP)
   const lastResults = new Map<number, FlibustaBook[]>();
-  // Последний запрос пользователя — чтобы перерисовать список из карточки.
+  // User's last query — used to redraw the list from a book card.
   const lastQuery = new Map<number, string>();
-  // Текущая страница списка (пагинация по 5, до 3 стр) — «Назад к списку»
-  // возвращает пользователя на ту страницу, где он был, а не на первую.
+  // Current list page (5 per page, up to 3 pages) — "Back to list"
+  // returns the user to the page they were on, not the first one.
   const lastPage = new Map<number, number>();
-  // Токен последнего запроса пользователя. Поиск фоновый: если юзер ввёл новый
-  // запрос, пока старый висел, старый по завершении не должен перезаписывать
-  // lastResults и редактировать сообщение. Сравниваем reqId — последний выигрывает.
+  // Last request token per user. Search is background: if the user typed a new
+  // query while the old one was pending, the old one must not overwrite
+  // lastResults or edit the message on completion. We compare reqId — last one wins.
   const lastReqId = new Map<number, number>();
-  // Rate limit в памяти. Отклонение от спеки (там был SQLite): для скользящего окна 60с
-  // персистентность избыточна. При росте >100 юзеров перенести в db.countEventsSince.
+  // In-memory rate limit. Deviation from the spec (which said SQLite): for a 60s sliding window
+  // persistence is redundant. Past 100 users, move to db.countEventsSince.
   const hits = new Map<number, number[]>();
-  // Повторные клики «скачать», пока файл ещё качается: ключ `${userId}:${url}`.
+  // Repeated "download" clicks while the file is still downloading: key `${userId}:${url}`.
   const inflight = new Set<string>();
-  // Кулдаун после успешного скачивания того же файла тем же юзером. grammY ждёт
-  // каждый обработчик, поэтому клики из разных батчей приходят уже после загрузки
-  // и без кулдауна каждый плодил бы дубль файла.
+  // Cooldown after a successful download of the same file by the same user. grammY awaits
+  // each handler, so clicks from later batches arrive after the download has finished
+  // and without the cooldown each would produce a duplicate file.
   const lastDownload = new Map<string, number>();
   const DOWNLOAD_COOLDOWN_MS = 10_000;
-  // Ограничители параллельности дорогих операций (защита upstream). Поиск — 2:
-  // серия запросов иначе затапливает flibusta сотней одновременных вызовов →
-  // троттлинг и «зависание». Скачивание — 5.
+  // Concurrency limiters for expensive operations (upstream protection). Search — 2:
+  // a burst of queries would otherwise flood flibusta with a hundred concurrent calls →
+  // throttling and apparent hangs. Download — 5.
   const searchSem = makeSemaphore(2);
   const downloadSem = makeSemaphore(5);
-  // Реестр фоновых задач: обработчик запускает поиск/скачивание в фоне и сразу
-  // возвращается, grammY эту работу не ждёт. idle() позволяет тестам дождаться
-  // завершения (и при желании — аккуратно закрыться при остановке).
+  // Background task registry: the handler starts search/download in background and
+  // returns at once; grammY does not await this work. idle() lets tests wait for
+  // completion (and, if needed, shut down cleanly).
   const pending = new Set<Promise<unknown>>();
   function track<T>(p: Promise<T>): Promise<T> {
     pending.add(p);
@@ -99,8 +99,8 @@ export function createBotHandlers(
     while (pending.size) await Promise.allSettled([...pending]);
   }
 
-  // Allowlist выключен — бот публичный. «Безлимитные» юзеры обходят дневные
-  // лимиты (поиск/скачивание): это UNLIMITED_IDS плюс админы.
+  // Allowlist is off — the bot is public. "Unlimited" users bypass daily
+  // limits (search/download): that is UNLIMITED_IDS plus admins.
   function unlimited(id: number): boolean {
     return cfg.unlimitedIds.includes(id) || cfg.adminIds.includes(id);
   }
@@ -121,43 +121,43 @@ export function createBotHandlers(
 
     const text = ctx.message?.text?.trim();
     if (!text) return;
-    // Лог запроса для замера на реальном трафике. Команды (/start и т.п.) не пишем.
+    // Log the query for measurement on real traffic. Commands (/start etc.) are not logged.
     if (!text.startsWith("/")) logUsage({ event: "query", uh: aliasOf(id), q: text, len: text.length });
-    // Защита от вставки длинного текста: иначе весь кусок улетает в LLM
-    // (дорогой вызов, возможен таймаут). Реальные запросы к книгам короткие.
+    // Guard against pasted long text: otherwise the whole chunk goes to the LLM
+    // (expensive call, possible timeout). Real book queries are short.
     if (text.length > cfg.maxQueryLen) {
       await ctx.reply(`Слишком длинный запрос — ${text.length} символов. Пришли название или автора, до ${cfg.maxQueryLen} символов.`);
       return;
     }
-    // Дневной лимит поисков — защита квоты LLM и от абьюза на публичном боте.
-    // Считаем сырые поиски за скользящие 24ч. Безлимитные юзеры проходят.
+    // Daily search limit — protects the LLM quota and against abuse on a public bot.
+    // Raw searches are counted over a sliding 24h. Unlimited users pass.
     if (!unlimited(id) && analytics.countSince(id, "search", dayAgo()) >= cfg.searchDailyLimit) {
       await ctx.reply(`Лимит поисков исчерпан: ${cfg.searchDailyLimit} за 24 часа. Попробуй через несколько часов.`);
       return;
     }
 
     analytics.logSearch(id, text);
-    // Поиск идёт в фоне, обработчик сразу возвращается. Иначе grammY держит
-    // очередь апдейтов на ~секунды LLM+OPDS, и остальные юзеры ждут; тот же
-    // корень был у дублей скачивания и слабого лимита под нагрузкой.
+    // Search runs in background; the handler returns at once. Otherwise grammY holds
+    // the update queue for the LLM+OPDS seconds and other users wait; the same
+    // root cause was behind duplicate downloads and weak limiting under load.
     void track(runSearch(ctx, id, text));
   }
 
   async function runSearch(ctx: HandlerCtx, id: number, text: string) {
     const reqId = (lastReqId.get(id) ?? 0) + 1;
     lastReqId.set(id, reqId);
-    // Ленивый статус: на быстром пути (кэш-хит / быстрый промах < 700 мс) не
-    // показываем ничего — иначе статус мерцал бы («появился → тут же список»).
-    // Один нативный typing закрывает ленивое окно до 700 мс.
+    // Lazy status: on the fast path (cache hit / fast miss < 700 ms) show
+    // nothing — otherwise the status would flicker ("appears → list right away").
+    // A single native typing action covers the lazy window up to 700 ms.
     void ctx.replyWithChatAction?.("typing").catch(() => {});
     let ref: MsgRef | null = null;
     let pendingSend: Promise<MsgRef> | null = null;
     let resolved = false;
     let currentPhase: SearchProgress = { kind: "parsing" };
-    // Throttle editMessage: пагинация плодовитого автора = до 10 страниц, а
-    // Telegram разрешает ~1 правку/сек. Частые обновления пропускаем, но
-    // отложенным флэшем гарантируем, что последнее состояние дойдёт.
-    // skip-if-same в status.ts гасит повторы одинакового текста.
+    // Throttle editMessage: a prolific author means up to 10 pages of pagination, and
+    // Telegram allows ~1 edit/sec. Frequent updates are skipped, but a
+    // deferred flush guarantees the last state gets through.
+    // skip-if-same in status.ts suppresses repeated identical texts.
     let lastEditAt = 0;
     let pendingFlush: ReturnType<typeof setTimeout> | null = null;
     const THROTTLE_MS = 900;
@@ -176,7 +176,7 @@ export function createBotHandlers(
     };
     const editProgress = (p: SearchProgress): void => {
       currentPhase = p;
-      if (!ref) return; // статус ещё не отправлен — lazy send покажет currentPhase
+      if (!ref) return; // status not sent yet — lazy send will show currentPhase
       const now = Date.now();
       const elapsed = now - lastEditAt;
       const flush = (): void => { lastEditAt = Date.now(); void msg.edit(ref!, phaseText(currentPhase)); };
@@ -197,10 +197,10 @@ export function createBotHandlers(
       pendingSend.then((r) => { if (!resolved) ref = r; }).catch(() => {});
     }, 700);
 
-    // Таймер «медленно»: если спустя 5с поиск всё ещё идёт — источник тупит, и
-    // статус «Ищу…» читается пользователем как зависание. Показываем явно, что
-    // бот жив и продолжает. Одноразовый: последующие события (retry, paging,
-    // финальный список) перезатрут его своим, более конкретным текстом.
+    // "Slow" timer: if the search is still running after 5s, the source is stalling and
+    // the "Searching…" status reads as a hang to the user. We show explicitly that
+    // the bot is alive and still working. One-shot: later events (retry, paging,
+    // final list) overwrite it with their own, more specific text.
     let slowTimer: ReturnType<typeof setTimeout> | null = null;
     slowTimer = setTimeout(() => {
       if (resolved || !ref) return;
@@ -208,10 +208,10 @@ export function createBotHandlers(
       void msg.edit(ref, "Библиотека отвечает медленно, но я продолжаю искать…").catch(() => {});
     }, 5_000);
 
-    // Если статус уже в полёте (send запущен, но не завершился к моменту ответа) —
-    // дождаться его и положить финальный текст в то же сообщение, а не отдельным
-    // reply. Иначе на переходном окне 700–1000 мс статус и список были бы двумя
-    // сообщениями (мерцание).
+    // If the status is already in flight (send started but not finished by the time we answer) —
+    // await it and put the final text into the same message, not a separate
+    // reply. Otherwise, in the 700–1000 ms transition window, status and list would be two
+    // messages (flicker).
     const ensureRef = async (): Promise<MsgRef | null> => {
       if (ref) return ref;
       if (pendingSend) { ref = await pendingSend.catch(() => null); return ref; }
@@ -225,10 +225,10 @@ export function createBotHandlers(
       await searchSem.acquire();
       try {
         const r = await orchestrator.search(text, 15, editProgress);
-        // Race-защита: пока этот запрос висел, пользователь ввёл новый — старый
-        // результат выбрасываем. Не перезаписываем lastResults и не трогаем
-        // сообщение нового запроса; свой статус-сообщение убираем, чтобы не
-        // «оживало» позже старым списком поверх нового.
+        // Race guard: while this request was pending, the user typed a new one — the old
+        // result is discarded. Don't overwrite lastResults, don't touch the
+        // new request's message; delete our own status message so it doesn't
+        // "revive" later with the old list on top of the new one.
         if (lastReqId.get(id) !== reqId) {
           resolved = true;
           clearTimeout(lazy);
@@ -259,7 +259,7 @@ export function createBotHandlers(
       lastQuery.set(id, text);
       lastPage.set(id, 0);
       const r = await ensureRef();
-      // Слабое совпадение — пометка, чтобы пользователь не принял приближение за точный ответ.
+      // Weak match — a note so the user doesn't take an approximation for an exact answer.
       const hint = lowRelevance ? "Я не нашёл конкретно, что ты просил, но у меня есть похожие экземпляры.\n\n" : "";
       const listText = hint + bookListText(books, text, 0);
       const listExtra = { reply_markup: bookListKeyboard(books, 0), parse_mode: "HTML" };
@@ -321,15 +321,15 @@ export function createBotHandlers(
       const idx = Number(idxStr);
       const book = results[idx];
       if (!book) return;
-      // Скачивание = сильный implicit ground truth: пользователь выбрал книгу по
-      // этому запросу. Пара {q, book_id} — готовый seed для замера на реальном трафике.
+      // Download = strong implicit ground truth: the user picked a book for
+      // this query. The {q, book_id} pair is a ready-made seed for measurement on real traffic.
       logUsage({ event: "choose", uh: aliasOf(id), q: lastQuery.get(id) ?? null, book_id: book.id ?? null, title: book.title, author: book.author ?? null });
 
       let url: string;
       try {
-        // Роутинг по источнику книги: royallib-книга скачивается своим клиентом,
-        // иначе flibusta. Ссылки royallib уже абсолютные (заполнены при разборе
-        // карточки), flibusta — относительные, её клиент сам приклеивает base.
+        // Routing by book source: a royallib book downloads through its own client,
+        // otherwise flibusta. Royallib links are already absolute (filled when parsing
+        // the card); flibusta links are relative, its client prepends the base.
         const source = book.provider === "royallib" && royallib ? royallib : flibusta;
         url = source.downloadUrl(book, fmt);
       } catch (e) {
@@ -338,17 +338,17 @@ export function createBotHandlers(
         return;
       }
       const filename = `${book.title}.${fmt}`.replace(/[\\/:*?"<>|]/g, "_");
-      // Дневной лимит скачиваний (скользящие 24ч). Безлимитные юзеры проходят.
+      // Daily download limit (sliding 24h). Unlimited users pass.
       if (!unlimited(id) && analytics.countSince(id, "download", dayAgo()) >= cfg.downloadDailyLimit) {
         await ctx.reply(`Дневной лимит скачиваний исчерпан: ${cfg.downloadDailyLimit} за 24 часа. Попробуй через несколько часов.`);
         return;
       }
-      // Защита от повторных кликов «скачать». Два слоя:
-      // 1) inflight — файл прямо сейчас качается. Ключ ставится синхронно в
-      //    обработчике и живёт до завершения фоновой загрузки, поэтому ловит
-      //    повторы из любых батчей (раньше — только из одного: обработчик
-      //    блокировался и ключ снимался до прихода следующего клика).
-      // 2) кулдаун — файл только что скачан (клики после завершения).
+      // Guard against repeated "download" clicks. Two layers:
+      // 1) inflight — the file is downloading right now. The key is set synchronously in
+      //    the handler and lives until the background download finishes, so it catches
+      //    repeats from any batch (before — only from one: the handler
+      //    blocked and the key was cleared before the next click arrived).
+      // 2) cooldown — the file was just downloaded (clicks after completion).
       const gkey = `${id}:${url}`;
       if (inflight.has(gkey)) {
         await ctx.reply("Эта книга уже скачивается, подожди немного.");
@@ -360,7 +360,7 @@ export function createBotHandlers(
         return;
       }
       inflight.add(gkey);
-      // Скачивание в фоне — обработчик сразу возвращается, очередь апдейтов не стоит.
+      // Download in background — the handler returns at once; the update queue keeps moving.
       void track(runDownload(ctx, id, book, url, filename, fmt, gkey));
       return;
     }
@@ -374,11 +374,11 @@ export function createBotHandlers(
         ref = await msg.send(id, `Скачиваю «${book.title}»…`);
         const meta = await downloader.fetchThen(url, filename, async (filePath) => {
           const { size } = await fs.stat(filePath);
-          // Перед отправкой документа меняем статус, чтобы пользователь видел
-          // переход от скачивания к отправке.
+          // Before sending the document, update the status so the user sees
+          // the transition from downloading to sending.
           await msg.edit(ref!, "Отправляю…");
-          // grammY требует InputFile (или строку), не «сырой» объект — иначе
-          // отправка файла молча падала в catch без лога.
+          // grammY requires an InputFile (or a string), not a "raw" object — otherwise
+          // the file send silently fell into catch with no log.
           await ctx.replyWithDocument(new InputFile(filePath, filename));
           return { size };
         }, fmt, (p) => { void msg.edit(ref!, formatProgress(p)); });
@@ -387,15 +387,15 @@ export function createBotHandlers(
           book_title: book.title, book_id: extractBookId(book, url),
           author: book.author, genre: book.category, format: fmt, size_bytes: meta.size,
         });
-        // Документ отправлен — статус больше не нужен, убираем.
+        // Document sent — the status is no longer needed, remove it.
         await msg.delete(ref);
       } finally {
         downloadSem.release();
       }
     } catch (e) {
-      // Раньше ошибка глоталась без лога — отсюда пустые логи. Теперь видно причину.
+      // The error used to be swallowed without logging — hence empty logs. Now the cause is visible.
       console.error("download fail:", (e as Error).message, "| url:", url, "| fmt:", fmt, "| book:", book.title);
-      // Если статус уже отправлен — правим его на текст ошибки; иначе обычный reply.
+      // If the status was already sent — edit it to the error text; otherwise a plain reply.
       if (ref) await msg.edit(ref, "Не удалось скачать. Попробуй другой формат.").catch(() => {});
       else await ctx.reply("Не удалось скачать файл. Попробуй другой формат.").catch(() => {});
     } finally {
@@ -418,7 +418,7 @@ function extractBookId(book: FlibustaBook, url: string): number {
   return m ? Number(m[1]) : 0;
 }
 
-// Байты → МБ (1024-based, 1 знак). Для прогресса скачивания.
+// Bytes → MB (1024-based, 1 decimal place). For download progress.
 function mb(bytes: number): string {
   return (bytes / 1024 / 1024).toFixed(1);
 }
@@ -427,13 +427,13 @@ function formatProgress(p: { downloaded: number; total: number | null }): string
     const pct = Math.min(100, Math.round((p.downloaded / p.total) * 100));
     return `Скачано ${pct}% · ${mb(p.downloaded)} / ${mb(p.total)} МБ`;
   }
-  // Content-Length неизвестен (chunked/zip) — проценты не считаем, только объём.
+  // Content-Length unknown (chunked/zip) — no percentages, just the amount.
   return `Скачано ${mb(p.downloaded)} МБ`;
 }
 
-// Приветствие для /start и /help. Только для allowlist-пользователей:
-// посторонним бот молчит, чтобы не раскрывать своё существование.
-// Картинка встроена в образ (assets/welcome.jpg).
+// Welcome message for /start and /help. Allowlisted users only:
+// the bot stays silent to strangers so it doesn't reveal its existence.
+// The image is baked into the Docker image (assets/welcome.jpg).
 const WELCOME_IMG = "/app/assets/welcome.jpg";
 const WELCOME_TEXT = `Привет. Это бот для поиска и скачивания книг.
 
@@ -448,7 +448,7 @@ const WELCOME_TEXT = `Привет. Это бот для поиска и ска�
 «Просвещение — это выход человека из состояния своего несовершеннолетия, в котором он находится по собственной вине».`;
 
 
-// Точка входа — собирает всё из конфига и запускает polling
+// Entry point — assembles everything from the config and starts polling
 export function buildApp(cfg: Config, db: Db) {
   const llm = createLlm({ llmBase: cfg.llmBase, llmApiKey: cfg.llmApiKey, model: cfg.model });
   const flibusta = createFlibusta({ base: cfg.flibustaBase, fallbackBase: cfg.flibustaFallbackBase });
@@ -460,18 +460,18 @@ export function buildApp(cfg: Config, db: Db) {
   const analytics = createAnalytics(db);
   const downloader = createDownloader("/tmp/book-search-downloads");
   const bot = new Bot(cfg.botToken);
-  // messenger берёт уже собранный bot.api: статус правит наши собственные
-  // сообщения по id через bot.api.editMessageText, а не входящее через ctx.
+  // messenger takes the already-built bot.api: status edits our own
+  // messages by id via bot.api.editMessageText, not the incoming one via ctx.
   const messenger = createStatusMessenger(bot.api);
   const handlers = createBotHandlers(cfg, orchestrator, analytics, downloader, flibusta, messenger, royallib);
-  // ctx в grammY содержит токен бота. При ошибке логируем только сообщение и
-  // update_id — не весь ctx, иначе токен попадает в постоянные логи.
+  // ctx in grammY contains the bot token. On error we log only the message and
+  // update_id — not the whole ctx, otherwise the token ends up in permanent logs.
   bot.catch((err) => {
     console.error("bot error:", err.message, "| update_id:", err.ctx?.update?.update_id);
   });
   bot.command("stats", (ctx) => handlers.onStats(ctx as unknown as HandlerCtx));
-  // /start и /help — фото с подписью, только для своих. Если фото не отправилось
-  // (например, файл пропал из образа) — падаем на текст, чтобы не терять онбординг.
+  // /start and /help — photo with caption, for our users only. If the photo fails
+  // (e.g. the file vanished from the image) — fall back to text so onboarding isn't lost.
   const welcome = async (c: HandlerCtx) => {
     const id = c.from?.id;
     if (!id) return;

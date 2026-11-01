@@ -13,7 +13,7 @@ if (cfg.logTtlDays) {
 
 const { bot } = buildApp(cfg, db);
 
-// Docker шлёт SIGTERM при stop/restart. Закрываем SQLite чисто.
+// Docker sends SIGTERM on stop/restart. Close SQLite cleanly.
 const shutdown = () => {
   db.close();
   process.exit(0);

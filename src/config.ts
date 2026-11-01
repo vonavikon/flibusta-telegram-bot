@@ -13,7 +13,7 @@ const Env = z.object({
   MODEL: z.string().min(1),
   FLIBUSTA_BASE: z.string().url(),
   FLIBUSTA_FALLBACK_BASE: z.preprocess(
-    // env_file читает пустой KEY= как "" — трактуем как «не задано»
+    // env_file reads an empty KEY= as "" — treat it as "not set"
     (v) => (v === "" ? undefined : v),
     z.string().url().optional(),
   ),

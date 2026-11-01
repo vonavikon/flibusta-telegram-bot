@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
-// flibusta-api default export — мокаем через vi.mock
+// flibusta-api default export — mocked via vi.mock
 vi.mock("flibusta", () => {
   const mock = vi.fn();
   return { default: mock };
@@ -27,8 +27,8 @@ describe("chooseAuthorId", () => {
   });
 
   it("голая фамилия-заглушка не выигрывает у полных имён с той же фамилией", () => {
-    // Кейс жалобы: getAuthors(«Васильев») содержит техническую запись «Васильев»
-    // (books=1), которая выигрывает по exact и уводит поиск в мусорный фид.
+    // Complaint case: getAuthors("Vasilev") contains a technical "Vasilev" entry
+    // (books=1) that wins by exact match and steers the search into a junk feed.
     const id = chooseAuthorId("Васильев", [
       { id: 321589, name: "Васильев", books: 1 },
       { id: 168147, name: "Андрей Александрович Васильев", books: 79 },
@@ -83,11 +83,11 @@ describe("flibusta wrapper", () => {
   afterEach(() => vi.clearAllMocks());
 
   it("title с предлогом «в» и пустым фидом: повтор без стоп-слов находит книгу", async () => {
-    // Кейс жалобы: «Не стреляйте в белых лебедей» — на Flibusta книга без «в»,
-    // opensearch строгий, пустой фид роняет пакет (slice по undefined) либо [].
+    // Complaint case: "Ne strelyayte v belykh lebedey" — on Flibusta the book is stored without "v",
+    // opensearch is strict, an empty feed crashes the package (slice on undefined) or returns [].
     const byName = vi.fn()
-      .mockResolvedValueOnce([]) // первый заход: пусто
-      .mockResolvedValueOnce([ // повтор без «в»: нашлось
+      .mockResolvedValueOnce([]) // first pass: empty
+      .mockResolvedValueOnce([ // retry without "v": found
         { title: "Не стреляйте белых лебедей", author: [{ name: "Васильев Борис Львович" }], categories: [], downloads: [{ link: "/b/1/fb2", type: "application/fb2+zip" }] },
       ]);
     (FlibustaAPI as any).mockImplementation(() => ({
@@ -105,8 +105,8 @@ describe("flibusta wrapper", () => {
   it("title-поиск падает оба раза (retry): повтор без стоп-слов всё равно делается", async () => {
     const sliceErr = new Error("Cannot read properties of undefined (reading 'slice')");
     const byName = vi.fn()
-      .mockRejectedValueOnce(sliceErr) // withRetry: попытка 1
-      .mockRejectedValueOnce(sliceErr) // withRetry: попытка 2
+      .mockRejectedValueOnce(sliceErr) // withRetry: attempt 1
+      .mockRejectedValueOnce(sliceErr) // withRetry: attempt 2
       .mockResolvedValueOnce([
         { title: "Не стреляйте белых лебедей", author: [{ name: "Васильев Борис Львович" }], categories: [], downloads: [{ link: "/b/1/fb2", type: "application/fb2+zip" }] },
       ]);
@@ -165,7 +165,7 @@ describe("flibusta wrapper", () => {
     const titles = books.map((b) => b.title);
     expect(titles).toContain("Шерлок");
     expect(titles).toContain("Другая");
-    expect(titles.filter((t) => t === "Шерлок")).toHaveLength(1); // дедуп по id (обе записи /b/1/)
+    expect(titles.filter((t) => t === "Шерлок")).toHaveLength(1); // dedup by id (both entries /b/1/)
   });
 
   it("searchBooks works with only title (no author)", async () => {
@@ -230,9 +230,9 @@ describe("flibusta wrapper", () => {
 describe("searchBooks: стриминг title-поиска", () => {
   afterEach(() => vi.clearAllMocks());
 
-  // Title-only запрос прежде молчал от «Ищу...» до «Сравниваю...», пока ждёт
-  // одиночный getBooksByNameFromOpds. Теперь стримим title-search, чтобы пользователь
-  // видел, что бот работает, а не завис.
+  // A title-only query used to stay silent from "Searching..." to "Comparing..." while it waited for
+  // the single getBooksByNameFromOpds. Now we stream title-search so the user sees
+  // the bot is working, not stuck.
   it("title-only запрос стримит title-search перед поиском по названию", async () => {
     (FlibustaAPI as any).mockImplementation(() => ({
       getAuthors: vi.fn(),
@@ -268,9 +268,9 @@ describe("searchBooks: стриминг title-поиска", () => {
 describe("searchBooks: retry при флаке flibusta", () => {
   afterEach(() => vi.clearAllMocks());
 
-  // flibusta.is нестабильна (~3 из 5 запросов зависают). Один повтор должен
-  // поднять книгу из «пусто» до «найдено» и сообщить прогресс retry, чтобы
-  // статус в чате не выглядел зависанием.
+  // flibusta.is is unstable (~3 of 5 requests hang). One retry should
+  // lift a book from "empty" to "found" and report retry progress so
+  // the chat status doesn't look like a hang.
   it("title-поиск: первый вызов падает, второй находит — стримит retry", async () => {
     (FlibustaAPI as any).mockImplementation(() => ({
       getAuthors: vi.fn(),
@@ -308,11 +308,11 @@ describe("searchBooks: retry при флаке flibusta", () => {
 });
 
 describe("splitSearchBooks: фильтр тезок", () => {
-  // Воспроизводит баг «Юрий Лотман»: разбиение «юрий»/«лотман» находило по
-  // имени «Юрий» самого плодовитого тезку (Никитина) и тащило все его книги,
-  // хотя фамилия «Лотман» из запроса к нему отношения не имеет. Title-часть
-  // разбиения («лотман») должна объясняться — входить в название или в автора
-  // книги. У книг Никитина она не объясняется → тезка отсекается.
+  // Reproduces the "Yuri Lotman" bug: the "yuri"/"lotman" split found the most
+  // prolific namesake by first name "Yuri" (Nikitin) and pulled in all his books,
+  // although the surname "Lotman" from the query has nothing to do with him. The title part
+  // of the split ("lotman") must be explained — appear in the book's title or author.
+  // In Nikitin's books it is not explained → the namesake is cut.
   const mockTnamesake = () => {
     const getAuthors = vi.fn(async (q: string) => {
       if (q.includes("лотман")) return [{ id: 1, name: "Лотман Юрий Михайлович", books: 100 }];
@@ -352,9 +352,9 @@ describe("splitSearchBooks: фильтр тезок", () => {
 describe("searchBooks: пагинация автора (RC1)", () => {
   afterEach(() => vi.clearAllMocks());
 
-  // Воспроизводит баг: getBooksByAuthorOpds отдаёт 1-ю страницу (20 книг), у
-  // Ефремова 189 — «Таис Афинская» на 7-й странице была недоступна. Обёртка
-  // теперь перебирает страницы, пока hasNextPage=true.
+  // Reproduces the bug: getBooksByAuthorOpds returns page 1 (20 books);
+  // Efremov has 189 — "Tais Afinskaya" on page 7 was unreachable. The wrapper
+  // now walks the pages while hasNextPage=true.
   it("собирает все страницы, пока hasNextPage=true (книга с 2-й страницы доступна)", async () => {
     const pages = [
       { items: [{ title: "Книга A", author: [{ name: "Ефремов" }], downloads: [{ link: "/b/10/fb2" }] }], currentPage: 0, hasNextPage: true, hasPreviousPage: false },
@@ -371,8 +371,8 @@ describe("searchBooks: пагинация автора (RC1)", () => {
     const f = createFlibusta({ base: "https://flibusta.is" });
     const books = await f.searchBooks({ authors: ["Ефремов"] });
     const titles = books.map((b) => b.title);
-    expect(titles).toContain("Таис Афинская"); // была на 2-й странице, раньше недоступна
-    expect(pag).toHaveBeenCalledTimes(3); // 0, 1, 2 — остановка на hasNextPage=false
+    expect(titles).toContain("Таис Афинская"); // was on page 2, previously unreachable
+    expect(pag).toHaveBeenCalledTimes(3); // 0, 1, 2 — stop at hasNextPage=false
     expect(books).toHaveLength(3);
   });
 
@@ -411,10 +411,10 @@ describe("searchBooks: пагинация автора (RC1)", () => {
 describe("searchBooks: стриминг прогресса пагинации", () => {
   afterEach(() => vi.clearAllMocks());
 
-  // Пагинация плодовитого автора стримится в чат: author-found (выбрали автора,
-  // знаем объём) → paging на каждой странице с накопленным числом книг и сигналом
-  // «нашёл», когда цель попалась. pageSize берём по первой странице (мок даёт по
-  // 1 книге → totalPages = ceil(booksCount / 1)).
+  // A prolific author's pagination streams into the chat: author-found (author picked,
+  // volume known) → paging on every page with the accumulated book count and a
+  // "found" signal when the target shows up. pageSize comes from the first page (the mock gives
+  // 1 book per page → totalPages = ceil(booksCount / 1)).
   it("звони author-found + paging на каждой странице с booksSoFar и found", async () => {
     const pages = [
       { items: [{ title: "Книга A", author: [{ name: "Ефремов" }], downloads: [{ link: "/b/10/fb2" }] }], currentPage: 0, hasNextPage: true, hasPreviousPage: false },
@@ -432,21 +432,21 @@ describe("searchBooks: стриминг прогресса пагинации", 
     const events: any[] = [];
     await f.searchBooks({ authors: ["Ефремов"] }, (p) => events.push(p), { targetTitle: "таис афинская" });
 
-    // author-found первым: выбрали автора из тезок, знаем объём его библиотеки
+    // author-found first: author picked from the namesakes, library volume known
     expect(events[0]).toEqual({ kind: "author-found", author: "Ефремов Иван", books: 3 });
 
     const paged = events.filter((e) => e.kind === "paging");
     expect(paged).toHaveLength(3);
-    // Страница 1: накопление, цели ещё нет
+    // Page 1: accumulating, no target yet
     expect(paged[0].page).toBe(1);
     expect(paged[0].totalPages).toBe(3); // ceil(3 / pageSize=1)
     expect(paged[0].booksSoFar).toBe(1);
     expect(paged[0].found).toBeUndefined();
-    // Страница 2: цель попалась — сообщаем один раз
+    // Page 2: target found — reported once
     expect(paged[1].page).toBe(2);
     expect(paged[1].booksSoFar).toBe(2);
     expect(paged[1].found).toBe("Таис Афинская");
-    // Страница 3: found не повторяется (уже сообщён)
+    // Page 3: found is not repeated (already reported)
     expect(paged[2].booksSoFar).toBe(3);
     expect(paged[2].found).toBeUndefined();
   });

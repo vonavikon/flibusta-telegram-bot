@@ -1,6 +1,6 @@
 FROM node:20-alpine AS build
 WORKDIR /app
-# git нужен patch-package (применяет патчи через git apply)
+# git is needed by patch-package (it applies patches via git apply)
 RUN apk add --no-cache python3 make g++ git
 COPY package.json package-lock.json ./
 COPY patches ./patches

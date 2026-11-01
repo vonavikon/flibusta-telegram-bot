@@ -1,22 +1,22 @@
 import { InlineKeyboard } from "grammy";
 import type { FlibustaBook } from "./search/flibusta.js";
 
-// Тексты рендерятся как HTML (parse_mode: "HTML" в вызывающей стороне).
-// Динамические значения экранируем — иначе <, >, & в названиях ломают разбор.
+// Texts are rendered as HTML (parse_mode: "HTML" on the calling side).
+// Dynamic values are escaped — otherwise <, >, & in titles break the parsing.
 
 const esc = (s: string): string =>
   s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 
-// «15349» → «15 349» — разделитель разрядов, удобнее сравнивать популярность.
+// "15349" → "15 349" — a thousands separator, easier to compare popularity.
 const fmtNum = (s: string): string => s.replace(/\B(?=(\d{3})+(?!\d))/g, " ");
 
-// Пагинация: 5 книг на странице, до 3 страниц (топ-15). Сквозная нумерация —
-// книга №7 на странице 2 остаётся №7, однозначно сопоставлена с book-индексом.
+// Pagination: 5 books per page, up to 3 pages (top-15). Continuous numbering —
+// book #7 on page 2 stays #7, unambiguously mapped to the book index.
 const PER_PAGE = 5;
 const MAX_PAGES = 3;
 
-// Текст ранжированного списка с контрастом: жирный заголовок-якорь,
-// жирное число скачиваний (метрика «какая лучше»), курсив — переводчик/серия.
+// Ranked list text with contrast: a bold anchor title,
+// a bold download count (the "which is better" metric), italic — translator/series.
 export function bookListText(books: FlibustaBook[], query?: string, page = 0): string {
   const start = page * PER_PAGE;
   const slice = books.slice(start, start + PER_PAGE);
@@ -44,7 +44,7 @@ function listItem(n: number, b: FlibustaBook): string {
   return lines.join("\n");
 }
 
-// Карточка книги: жирное название, структурированные метаданные, описание.
+// Book card: bold title, structured metadata, description.
 export function bookCardText(b: FlibustaBook): string {
   const lines = [`<b>${esc(b.title)}</b>`];
   if (b.author) lines.push(`Автор: ${esc(b.author)}`);
@@ -62,7 +62,7 @@ export function bookCardText(b: FlibustaBook): string {
   return lines.join("\n");
 }
 
-// Кнопки-номера (сквозные, book:globalIdx) + навигация по страницам.
+// Number buttons (continuous, book:globalIdx) + page navigation.
 export function bookListKeyboard(books: FlibustaBook[], page = 0): InlineKeyboard {
   const kb = new InlineKeyboard();
   const start = page * PER_PAGE;
@@ -78,7 +78,7 @@ export function bookListKeyboard(books: FlibustaBook[], page = 0): InlineKeyboar
   return kb;
 }
 
-// Форматы книги + возврат к списку.
+// Book formats + back to the list.
 export function formatsKeyboard(book: FlibustaBook, index: number): InlineKeyboard {
   const kb = new InlineKeyboard();
   for (const fmt of book.formats) kb.text(fmt.toUpperCase(), `fmt:${index}:${fmt}`);

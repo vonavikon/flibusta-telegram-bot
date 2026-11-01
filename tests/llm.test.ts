@@ -63,9 +63,9 @@ describe("llm", () => {
     await llm.parseQuery("какой-то запрос");
     const body = JSON.parse(calls[0].body);
     const userMsgs = body.messages.filter((m: any) => m.role === "user").map((m: any) => m.content);
-    // есть example-юзер из few-shot (не только финальный запрос)
+    // there is an example user turn from the few-shot (not just the final query)
     expect(userMsgs.some((c: string) => c.includes("пелевин") || c.includes("мартин"))).toBe(true);
-    // финальный запрос тоже на месте
+    // the final query is in place too
     expect(userMsgs.some((c: string) => c.includes("какой-то запрос"))).toBe(true);
   });
 });

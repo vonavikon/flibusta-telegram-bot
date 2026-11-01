@@ -23,7 +23,7 @@ describe("downloader", () => {
     const d = createDownloader(tmp);
     const meta = await d.fetchThen("https://flibusta.is/b/1/fb2", "book.fb2", onFile);
     expect(meta.size).toBe(100);
-    // файл удалён после onFile
+    // file deleted after onFile
     await expect(fs.access(reportedPath)).rejects.toThrow();
   });
 
@@ -76,11 +76,11 @@ describe("downloader", () => {
     const onFile = async (p: string) => { got = await fs.readFile(p); return { size: got.length }; };
     const d = createDownloader(tmp);
     await d.fetchThen("https://flibusta.is/b/1/epub", "Книга.epub", onFile, "epub");
-    expect(got[0]).toBe(0x50); // PK — zip сохранён как есть
+    expect(got[0]).toBe(0x50); // PK — zip kept as is
   });
 
   it("сообщает прогресс скачивания (total null без content-length)", async () => {
-    // new Response(body) не выставляет content-length → total должен быть null.
+    // new Response(body) sets no content-length → total must be null.
     global.fetch = vi.fn(async () =>
       new Response(Buffer.from([1, 2, 3, 4, 5]), { status: 200 })
     ) as any;
@@ -91,7 +91,7 @@ describe("downloader", () => {
       undefined, (p) => seen.push(p),
     );
     expect(seen.length).toBeGreaterThanOrEqual(1);
-    // Финальный отчёт: все 5 байт, total null.
+    // Final report: all 5 bytes, total null.
     expect(seen.at(-1)).toEqual({ downloaded: 5, total: null });
   });
 });

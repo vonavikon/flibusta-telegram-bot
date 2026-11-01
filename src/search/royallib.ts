@@ -3,28 +3,28 @@ import type { FlibustaBook } from "./flibusta.js";
 
 type Deps = { base: string };
 
-// Таймаут на один сетевой вызов к royallib. Сайт без API — поиск = POST /search/
-// + до MAX_CARDS GET карточек параллельно. Одиночная страница ~30-50 КБ, норма
-// ~1с; 6с — потолок, дольше — stall (как flibusta: обрываем ожидание вызывающего).
+// Timeout for a single royallib network call. The site has no API — search = POST /search/
+// + up to MAX_CARDS card GETs in parallel. A single page is ~30-50 KB, normally
+// ~1s; 6s is the cap, longer is a stall (like flibusta: we cut the caller's wait).
 const CALL_TIMEOUT_MS = 6_000;
 
-// Сколько карточек книг тянем для извлечения форматов/аннотации. Royallib —
-// вторичный источник (flibusta приоритетна), поэтому обходимся скромным пулом:
-// больше карточек = больше параллельных GET без пропорционального роста пользы.
+// How many book cards to fetch for formats/annotation extraction. Royallib is
+// the secondary source (flibusta takes priority), so a modest pool is enough:
+// more cards = more parallel GETs without a proportional gain.
 const MAX_CARDS = 8;
 
 const UA =
   "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36";
 
-// royallib отдаёт ссылки protocol-relative («//royallib.com/...») — приводим к https.
+// royallib returns protocol-relative links ("//royallib.com/...") — we normalize to https.
 function abs(u: string): string {
   if (u.startsWith("//")) return "https:" + u;
   if (u.startsWith("http")) return u;
   return u;
 }
 
-// Минимальная развёртка HTML-сущностей: названия/аннотации могут содержать
-// &nbsp;, &mdash; и т.п. Полный парсер не нужен — покрываем частые случаи.
+// Minimal HTML entity decoding: titles/annotations may contain
+// &nbsp;, &mdash; and the like. A full parser is unnecessary — we cover the common cases.
 function decodeHtml(s: string): string {
   return s
     .replace(/&nbsp;/g, " ")
@@ -61,13 +61,13 @@ async function fetchText(url: string, init?: RequestInit): Promise<string> {
 
 type SearchHit = { href: string; title: string; author: string };
 
-// Разбираем секцию «Книги» страницы результатов поиска. Каждая строка книги:
-//   <tr><td><a href="//royallib.com/book/<author>/<title>.html">Название</a></td>
+// We parse the «Книги» (Books) section of the search results page. Each book row:
+//   <tr><td><a href="//royallib.com/book/<author>/<title>.html">Title</a></td>
 //       <td>&nbsp;</td><td><a href="//royallib.com/author/<author>.html">
-//       <font size="-2">Автор</font></a></td></tr>
-// Секции «Авторы» и «Серии» отсекаем: ищем только после заголовка «>Книги</h2>».
-// Пару (книга → автор) берём из одной строки: нежадный [\s\S]*? от book-ссылки
-// до первой author-ссылки (она в той же строке).
+//       <font size="-2">Author</font></a></td></tr>
+// The «Авторы» (Authors) and «Серии» (Series) sections are cut off: we only search after the ">Книги</h2>" header.
+// The (book → author) pair is taken from one row: a lazy [\s\S]*? from the book link
+// to the first author link (it is in the same row).
 function parseSearchResults(html: string): SearchHit[] {
   const idx = html.indexOf(">Книги</h2>");
   if (idx < 0) return [];
@@ -92,9 +92,9 @@ type Card = {
   formats: string[];
 };
 
-// Карточка книги /book/<author>/<title>.html: обложка, жанр, аннотация, форматы.
-// Форматы — единственное, что критично для скачивания; обложка/жанр/аннотация
-// обогащают выдачу. Ссылки скачивания: /get/<fmt>/<author>/<title>.zip.
+// Book card /book/<author>/<title>.html: cover, genre, annotation, formats.
+// Formats are the only part critical for downloading; cover/genre/annotation
+// enrich the result. Download links: /get/<fmt>/<author>/<title>.zip.
 function parseCard(html: string): Card {
   const cover = html.match(/src="([^"]*\/data\/images\/[^"]*)"/i);
   const coverUrl = cover ? abs(cover[1]) : undefined;
@@ -121,8 +121,8 @@ function parseCard(html: string): Card {
 }
 
 function toBook(h: SearchHit, card: Card | null): FlibustaBook {
-  // Размер показываем по fb2 (основной формат) либо по первому доступному —
-  // в списке «103 Кб» полезнее всего при первом формате.
+  // Size is shown for fb2 (the primary format) or the first available —
+  // in the list, "103 KB" is most useful for the first format.
   const size =
     card?.downloads.find((d) => d.format === "fb2")?.size ?? card?.downloads[0]?.size;
   return {
@@ -140,15 +140,15 @@ function toBook(h: SearchHit, card: Card | null): FlibustaBook {
 
 export function createRoyallib(deps: Deps) {
   return {
-    // Поиск: один POST /search/ + параллельный доразбор карточек. Без LLM и без
-    // пагинации — royallib вторичен, flibusta остаётся основным источником.
+    // Search: one POST /search/ + parallel card parsing. No LLM and no
+    // pagination — royallib is secondary, flibusta stays the primary source.
     async searchBooks(q: ParsedQuery): Promise<FlibustaBook[]> {
-      // «Название + автор», а не только название: royallib ищет по OR, и title-only
-      // находит тезку-название вместо нужной книги (живой кейс: «фрегат паллада» →
-      // рецензия Добролюбова «Фрегат 'Паллада'», а не гончаровский «Фрегат „Паллада"»).
-      // Автор дисциплинирует поиск — подтягивает и биографии/статьи об авторе (шум),
-      // но этот шум отсекается в orchestrator штрафом за чужого автора. Без названия
-      // (author-only) — по автору.
+      // "Title + author", not title alone: royallib searches with OR, and title-only
+      // finds a namesake title instead of the wanted book (live case: the query "fregat pallada" →
+      // Dobrolyubov's review "Frigate 'Pallada'" instead of Goncharov's novel "Frigate Pallada").
+      // The author disciplines the search — it also pulls in biographies/articles about the author (noise),
+      // but that noise is cut in the orchestrator by the wrong-author penalty. Without a title
+      // (author-only) — by author.
       const query = (q.title ? [q.title, ...(q.authors ?? [])] : q.authors ?? []).join(" ").trim();
       if (!query) return [];
       const html = await fetchText(`${deps.base}/search/`, {
@@ -163,8 +163,8 @@ export function createRoyallib(deps: Deps) {
             const card = parseCard(await fetchText(h.href));
             return toBook(h, card);
           } catch {
-            // Карточка упала — книга всё равно полезна (название + автор), но без
-            // форматов скачать нельзя. Оставляем без форматов.
+            // A card fetch failed — the book is still useful (title + author), but without
+            // formats it can't be downloaded. Kept without formats.
             return toBook(h, null);
           }
         }),
@@ -172,8 +172,8 @@ export function createRoyallib(deps: Deps) {
       return books;
     },
 
-    // Ссылка скачивания уже абсолютная (заполнена при разборе карточки) — просто
-    // берём нужный формат из downloads.
+    // The download link is already absolute (filled when parsing the card) — just
+    // take the requested format from downloads.
     downloadUrl(book: FlibustaBook, format: string): string {
       const d = book.downloads.find((x) => x.format === format) ?? book.downloads[0];
       if (!d) throw new Error(`нет ссылки скачивания для ${book.title}`);

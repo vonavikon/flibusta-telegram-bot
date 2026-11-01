@@ -3,9 +3,9 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-// usage-log читает USAGE_LOG_PATH лениво при каждом вызове, поэтому каждый тест
-// выставляет свой путь ДО первого logUsage, а модуль подгружаем динамическим
-// import — он возьмёт свежий env. aliasOf от env не зависит, но держим единый стиль.
+// usage-log reads USAGE_LOG_PATH lazily on every call, so each test
+// sets its own path BEFORE the first logUsage, and the module is loaded with a dynamic
+// import — it picks up the fresh env. aliasOf doesn't depend on env, but we keep one style.
 describe("usage-log", () => {
   let tmpFile: string;
 
@@ -16,7 +16,7 @@ describe("usage-log", () => {
 
   afterEach(() => {
     delete process.env.USAGE_LOG_PATH;
-    try { fs.unlinkSync(tmpFile); } catch { /* мог не создаться */ }
+    try { fs.unlinkSync(tmpFile); } catch { /* might not exist */ }
   });
 
   it("aliasOf is stable, differs per id, 8 hex chars", async () => {

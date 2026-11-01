@@ -1,9 +1,9 @@
 import * as FlibustaNS from "flibusta";
 import type { ParsedQuery } from "./llm.js";
 
-// Пакет flibusta собран webpack как CommonJS/UMD. При ESM-импорте его default
-// оборачивается в namespace-объект, и конструктор лежит в .default.default.
-// Под моком vitest (vi.mock → { default: mock }) — в .default. Берём оба варианта.
+// The flibusta package is webpack-bundled as CommonJS/UMD. On ESM import its default
+// gets wrapped in a namespace object, and the constructor sits at .default.default.
+// Under a vitest mock (vi.mock → { default: mock }) — at .default. Handle both variants.
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const FlibustaAPI: any = (FlibustaNS as any).default?.default ?? (FlibustaNS as any).default;
 
@@ -16,32 +16,32 @@ export type FlibustaBook = {
   coverUrl?: string;
   downloads: { link: string; format: string }[];
   formats: string[];
-  // Извлекаются из хвоста описания («Перевод: … Размер: … Скачиваний: …»).
+  // Parsed from the description tail (the "label: value" block, see META_LABELS below).
   size?: string;
   downloadsCount?: string;
   series?: string;
   translator?: string;
   language?: string;
-  // Источник книги ("flibusta" | "royallib"): по нему bot.ts выбирает клиент
-  // для downloadUrl. flibusta ставит всегда; другие провайдеры — своё значение.
+  // Book source ("flibusta" | "royallib"): bot.ts uses it to pick the client
+  // for downloadUrl. flibusta always sets it; other providers set their own value.
   provider?: string;
 };
 
 type Deps = { base: string; fallbackBase?: string; httpAgent?: unknown };
 
 const FORMAT_RE = /\/b\/\d+\/([a-z0-9]+)/i;
-// /b/ID/... — числовой идентификатор книги в flibusta. Нужен для дедупа по id
-// (а не по title: разные издания одной книги или одноимённые книги разных
-// авторов не должны схлопываться) и для cross-check между LLM- и split-пулом.
+// /b/ID/... — numeric book id in flibusta. Used for dedup by id
+// (not by title: different editions of one book, or same-name books by different
+// authors, must not collapse) and for cross-check between the LLM and split pools.
 const BOOK_ID_RE = /\/b\/(\d+)/i;
 
-// Метки хвоста описания у flibusta. Капителлизированы и фиксированы —
-// поэтому матчим регистрочувствительно, чтобы не цеплять слова из аннотации.
+// Flibusta description-tail labels. Capitalized and fixed —
+// so we match case-sensitively to avoid catching annotation words.
 const META_LABELS = ["Перевод", "Формат", "Язык", "Размер", "Скачиваний", "Серия", "Год издания"];
 type BookMeta = Pick<FlibustaBook, "size" | "downloadsCount" | "series" | "translator" | "language">;
 
-// Описание = аннотация + блок «Метка: значение Метка: значение …».
-// Разрезаем по первой метке: слева — аннотация для показа, справа — метаданные.
+// Description = annotation + a "Label: value Label: value …" block.
+// We split at the first label: left — annotation to show, right — metadata.
 function parseDescription(desc: string | undefined): { annotation?: string; meta: BookMeta } {
   if (!desc) return { meta: {} };
   const text = desc.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
@@ -65,9 +65,9 @@ function parseDescription(desc: string | undefined): { annotation?: string; meta
   };
 }
 
-// У части книг ссылка /b/ID/download без формата в пути — формат тогда виден
-// только в MIME-типе (диафильм: /b/361093/download с application/pdf+zip).
-// Раньше такие ссылки слепо метились fb2, и под fb2-кнопкой уезжал pdf.
+// Some books have a /b/ID/download link with no format in the path — the format
+// is then only visible in the MIME type (diafilm: /b/361093/download with application/pdf+zip).
+// Such links used to be blindly tagged fb2, and a pdf ended up behind the fb2 button.
 const MIME_TO_FORMAT: [RegExp, string][] = [
   [/fb2/, "fb2"],
   [/epub/, "epub"],
@@ -81,7 +81,7 @@ const MIME_TO_FORMAT: [RegExp, string][] = [
 ];
 
 function formatFromMime(mime: unknown): string {
-  if (typeof mime !== "string") return "fb2"; // /b/ID/download без MIME — исторически fb2 в zip
+  if (typeof mime !== "string") return "fb2"; // /b/ID/download with no MIME — historically fb2 in zip
   const hit = MIME_TO_FORMAT.find(([re]) => re.test(mime));
   return hit ? hit[1] : "fb2";
 }
@@ -98,7 +98,7 @@ function normalize(raw: any, base: string): FlibustaBook {
   const formats = Array.from(new Set(downloads.map((d) => d.format)))
     .filter((f) => f && f !== "unknown");
   const { annotation, meta } = parseDescription(raw.description);
-  // id книги — из первой download-ссылки вида /b/<id>/...
+  // book id — from the first download link of the form /b/<id>/...
   const idLink = downloads[0]?.link;
   const idMatch = idLink ? String(idLink).match(BOOK_ID_RE) : null;
   return {
@@ -115,35 +115,35 @@ function normalize(raw: any, base: string): FlibustaBook {
   };
 }
 
-// Локальная нормализация имени для сравнения: lowercase, убрать пунктуацию,
-// сжать пробелы. Аналог norm из orchestrator.ts, но здесь своего norm нет,
-// тянуть общую утиль ради одной функции избыточно.
+// Local name normalization for comparison: lowercase, strip punctuation,
+// collapse spaces. Same as norm in orchestrator.ts, but there is no norm here,
+// and pulling shared utils for one function would be overkill.
 function normName(s: string): string {
   return s.toLowerCase().replace(/ё/g, "е").replace(/[«»"'!.,?;:()\[\]]/g, " ").replace(/\s+/g, " ").trim();
 }
 
-// Предлоги и союзы, которых часто нет в названии книги в каталоге: запрос
-// «Не стреляйте в белых лебедей» там хранится без «в», и строгий opensearch
-// по полной строке возвращает ноль. Частицу «не» НЕ выкидываем: она часть
-// самих названий («Не стреляйте», «Не навеки»).
+// Prepositions and conjunctions often missing from catalog book titles: the query
+// "Ne strelyayte v belykh lebedey" is stored there without the "v", and strict
+// opensearch on the full string returns zero. The particle "ne" is NOT dropped:
+// it is part of the titles themselves ("Ne strelyayte", "Ne naveki").
 export const TITLE_STOP_WORDS = new Set([
   "в", "во", "на", "по", "о", "об", "от", "до", "для", "у", "за", "с", "со",
   "к", "ко", "при", "и", "а", "но", "да", "или", "же", "бы", "под", "над",
   "без", "через", "про", "из", "между", "перед", "после",
 ]);
 
-// Название без предлогов/союзов — для повторного захода, когда строгий поиск
-// по полной строке ничего не вернул. Нормализация как в normName.
+// Title without prepositions/conjunctions — for a second pass when the strict
+// full-string search returned nothing. Normalized the same way as normName.
 export function stripTitleStopWords(title: string): string {
   return normName(title).split(" ").filter((w) => w && !TITLE_STOP_WORDS.has(w)).join(" ");
 }
 
-// Таймаут на одиночный вызов к Flibusta. Пакет под капотом гоняет axios без
-// per-request timeout: под rate-limit одиночный запрос висит на TCP-уровне
-// минутами, и пользователь видит вечное «Ищу...». Promise.race обрывает ожидание
-// вызывающего (сам axios-запрос догниёт в фоне и соберётся GC). 5с — потолок на
-// одну страницу/поиск: нормальная страница ~1с, ответ медленнее 4с уже исключение.
-// 5с (а не 6с) оставляет запас под retry в общий deadline orchestrator (16с).
+// Timeout for a single Flibusta call. The package drives axios without
+// per-request timeouts: under rate-limit a single request hangs at the TCP level
+// for minutes, and the user sees an eternal "Searching…". Promise.race cuts the
+// caller's wait (the axios request itself dies in the background and gets GC'd).
+// 5s is the cap per page/search: a normal page is ~1s, slower than 4s is already an outlier.
+// 5s (not 6s) leaves room for a retry within the orchestrator deadline (16s).
 const CALL_TIMEOUT_MS = 5_000;
 function withTimeout<T>(p: Promise<T>, ms: number = CALL_TIMEOUT_MS): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -155,11 +155,11 @@ function withTimeout<T>(p: Promise<T>, ms: number = CALL_TIMEOUT_MS): Promise<T>
   });
 }
 
-// Повтор при сбое (таймаут/сетевая ошибка). flibusta.is нестабильна: ~3 из 5
-// одиночных запросов зависают до таймаута, но следующая попытка часто проходит
-// за доли секунды. Один повтор даёт заметный прирост покрытия при +5с worst-case.
-// onRetry вызывается перед повтором — это сигнал прогресса для статуса в чате
-// (пользователь видит «пробую ещё раз», а не вечное «Ищу...»).
+// Retry on failure (timeout/network error). flibusta.is is unstable: ~3 of 5
+// single requests hang until timeout, but the next attempt often completes
+// in a fraction of a second. One retry gives a solid coverage boost at +5s worst-case.
+// onRetry fires before the retry — a progress signal for the chat status
+// (the user sees "trying again" instead of an eternal "Searching…").
 async function withRetry<T = any>(fn: () => Promise<T>, onRetry?: () => void, attempts = 2): Promise<T> {
   let lastErr: unknown;
   for (let i = 0; i < attempts; i++) {
@@ -173,29 +173,29 @@ async function withRetry<T = any>(fn: () => Promise<T>, onRetry?: () => void, at
   throw lastErr;
 }
 
-// Выбор автора из списка совпадений Flibusta. getAuthors возвращает несколько
-// (одфамильцы, разные переводы имени). Алгоритм: точное совпадение → вхождение
-// → пересечение токенов. При РАВЕНСТВЕ совпадения (одфамильцы с одинаковой
-// длиной фамилии: «достоевский» → Андрей/Дмитрий/Михаил/Фёдор) — побеждает
-// самый плодовитый автор (поле books из getAuthors). Раньше брали первого
-// попавшегося — это ловило случайного однофамильца вместо известного автора.
+// Choosing an author from Flibusta's match list. getAuthors returns several
+// (namesakes, different translations of a name). Algorithm: exact match → inclusion
+// → token overlap. On a TIE (namesakes with the same
+// surname length: "dostoevsky" → Andrey/Dmitry/Mikhail/Fyodor) the most
+// prolific author wins (the books field from getAuthors). We used to take the
+// first hit — that caught a random namesake instead of the known author.
 export function chooseAuthorId(
   requested: string,
   authors: { id: number; name: string; books?: number }[],
 ): number | undefined {
   if (!authors.length) return undefined;
   const req = normName(requested);
-  // Нет запроса или ничего не совпало — самый плодовитый, не «первый в выдаче».
+  // No query or nothing matched — the most prolific one, not "first in the list".
   const byPopularity = () =>
     [...authors].sort((a, b) => (b.books ?? 0) - (a.books ?? 0))[0].id;
   if (!req) return byPopularity();
 
   const exact = authors.find((a) => normName(a.name) === req);
-  // Голая фамилия как точное совпадение — обычно техническая заглушка каталога
-  // (запись «Васильев» с books=1), вытесняющая полные имена живых авторов из
-  // выдачи getAuthors. Если среди кандидатов есть полные имена с этим словом —
-  // не отдаём победу заглушке: проваливаемся ниже, где при равной длине
-  // совпадения решает плодовитость (books).
+  // A bare surname as an exact match is usually a catalog technical stub
+  // (a "Vasilev" entry with books=1) that pushes full names of real authors out
+  // of the getAuthors results. If any candidate has a fuller name containing
+  // the word — don't let the stub win: fall through below, where equal match
+  // lengths are decided by prolificness (books).
   const hasFullerName =
     !req.includes(" ") &&
     authors.some((a) => {
@@ -234,20 +234,20 @@ export function chooseAuthorId(
   return byPopularity();
 }
 
-// Полная библиография автора постранично. getBooksByAuthorOpds отдаёт только
-// 1-ю страницу OPDS (20 книг); у плодовитых авторов (Ефремов 189, Стругацкие)
-// основные романы лежат на страницах 2-10 и были недоступны — поиск по автору
-// молча терял большинство книг. Перебираем страницы, пока есть next-link.
+// Full author bibliography, page by page. getBooksByAuthorOpds returns only
+// OPDS page 1 (20 books); for prolific authors (Efremov 189, the Strugatskys)
+// the main novels sit on pages 2-10 and were unreachable — an author search
+// silently lost most books. We walk pages while a next-link exists.
 //
-// Бюджет ограничивает нагрузку и латентность: потолок страниц и потолок времени
-// на одного автора. 12 страниц × 20 = до 240 записей — покрывает Ефремова (10
-// стр.). Таймаут 6с: OPDS-страница ~1с, 6с ≈ 6 страниц — хватает до page 6,
-// где у плодовитых авторов лежат основные романы (у Ефремова «Таис Афинская»
-// на page 6). Меньше — теряем книги; больше — пользователь ждёт.
-// Повторные запросы берутся из кэша orchestrator (6ч).
-// Прогресс поиска для стриминга в чат. author-found — выбрали автора из списка
-// тезок, знаем объём его библиографии; paging — перебор страниц с накопленным
-// числом книг и сигналом «нашёл», если цель попалась на текущей странице.
+// The budget caps load and latency: a page limit and a time limit
+// per author. 12 pages × 20 = up to 240 entries — covers Efremov (10
+// pages). Timeout 6s: an OPDS page is ~1s, 6s ≈ 6 pages — enough to reach page 6,
+// where prolific authors keep their main novels (Efremov's "Tais Afinskaya" is on
+// page 6). Less — we lose books; more — the user waits.
+// Repeat requests are served from the orchestrator cache (6h).
+// Search progress for streaming into the chat. author-found — an author was picked
+// from the namesakes, we know the size of his bibliography; paging — walking pages with the
+// accumulated book count and a "found" signal when the target shows up on a page.
 export type FlibustaProgress =
   | { kind: "author-found"; author: string; books: number }
   | { kind: "paging"; page: number; totalPages: number; booksSoFar: number; found?: string }
@@ -264,13 +264,13 @@ async function searchBooksByAuthor(
   const out: FlibustaBook[] = [];
   const start = Date.now();
   let page = 0;
-  // Цель для сигнала «нашёл»: нормализованное название из запроса. На каждой
-  // странице проверяем, не появилась ли книга с этим названием — попадание
-  // сообщаем один раз, чтобы пользователь видел, что нужная книга в сборе.
+  // Target for the "found" signal: the normalized title from the query. On each
+  // page we check whether a book with this title has appeared — a hit is
+  // reported once, so the user sees the wanted book is in the bag.
   const target = opts?.targetTitle ? normName(opts.targetTitle) : "";
   let foundReported = false;
   let booksSoFar = 0;
-  let pageSize = 20; // дефолт; уточняем по первой странице
+  let pageSize = 20; // default; refined from the first page
   let totalPages = opts?.booksCount ? Math.ceil(opts.booksCount / pageSize) : 0;
   while (page < budget.maxPages) {
     if (Date.now() - start > budget.maxTimeMs) break;
@@ -278,7 +278,7 @@ async function searchBooksByAuthor(
     try {
       res = await client.getBooksByAuthorOpdsPaginated(id, page, 50);
     } catch {
-      break; // страница упала — берём что есть, не роняем весь поиск
+      break; // page failed — keep what we have, don't fail the whole search
     }
     if (!res) break;
     const items = Array.isArray(res.items) ? res.items : [];
@@ -297,17 +297,17 @@ async function searchBooksByAuthor(
     if (!res.hasNextPage) break;
     page++;
   }
-  // Диагностика RC1: если перешли за 1-ю страницу — пагинация отработала.
-  // Логируем для видимости в docker logs (плодовитый автор: раньше эти книги
-  // молча терялись на первой странице). Кэш orchestrator (6ч) гасит повторы.
+  // RC1 diagnostics: if we got past page 1 — pagination worked.
+  // Logged for visibility in docker logs (prolific author: these books used to
+  // be silently lost on the first page). The orchestrator cache (6h) dampens repeats.
   if (page > 0) console.warn(`pagination author id=${id}: ${out.length} books across ${page + 1} pages`);
   return out;
 }
 
 export function createFlibusta(deps: Deps) {
-  // Клиент с таймаутом на каждом сетевом вызове. axios внутри пакета не прерывает
-  // stall сам, поэтому оборачиваем 4 метода в withTimeout: вызов отваливается
-  // через CALL_TIMEOUT_MS, ловится catch в searchBooks/split и идёт дальше.
+  // Client with a timeout on every network call. axios inside the package does not
+  // break stalls itself, so we wrap 4 methods in withTimeout: the call gives up
+  // after CALL_TIMEOUT_MS, gets caught in searchBooks/split and moves on.
   const makeClient = (base: string): any => {
     const c: any = new FlibustaAPI(base, deps.httpAgent ? { httpAgent: deps.httpAgent } : undefined);
     const timed = (name: string) => {
@@ -332,12 +332,12 @@ export function createFlibusta(deps: Deps) {
       const client = makeClient(deps.base);
       const out: FlibustaBook[] = [];
 
-      // По названию — первым: один быстрый вызов и самый точный результат для
-      // запроса «название + автор». Retry гасит флаки flibusta.is: одиночный
-      // таймаут не должен отдавать пустую выдачу, если следующая попытка прошла бы.
+      // By title — first: one fast call and the most precise result for
+      // a "title + author" query. Retry dampens flibusta.is flakiness: a single
+      // timeout must not produce an empty result if the next attempt would succeed.
       if (q.title) {
-        // Стримим отдельный статус: title-only поиск иначе молчит от «Ищу...»
-        // до «Сравниваю...», пока ждёт одиночный getBooksByNameFromOpds.
+        // Stream a separate status: otherwise a title-only search stays silent from "Searching…"
+        // to "Comparing…" while it waits for the single getBooksByNameFromOpds call.
         onProgress?.({ kind: "title-search" });
         try {
           const list = await withRetry(
@@ -345,10 +345,10 @@ export function createFlibusta(deps: Deps) {
             () => onProgress?.({ kind: "retry", what: "title" }),
           );
           if (Array.isArray(list)) out.push(...list.map((r) => normalize(r, deps.base)));
-        } catch { /* зеркало упало — fallback ниже */ }
-        // Стоп-слово в запросе, которого нет в названии в каталоге, роняет
-        // строгий opensearch в ноль («Не стреляйте в белых лебедей» хранится
-        // без «в»). Первый заход пуст — повторяем без предлогов/союзов.
+        } catch { /* mirror failed — fallback below */ }
+        // A stop word in the query that the catalog title lacks zeroes out
+        // the strict opensearch ("Ne strelyayte v belykh lebedey" is stored
+        // without the "v"). First pass empty — retry without prepositions/conjunctions.
         if (!out.length) {
           const stripped = stripTitleStopWords(q.title);
           if (stripped && stripped !== normName(q.title)) {
@@ -358,13 +358,13 @@ export function createFlibusta(deps: Deps) {
                 () => onProgress?.({ kind: "retry", what: "title" }),
               );
               if (Array.isArray(list)) out.push(...list.map((r) => normalize(r, deps.base)));
-            } catch { /* и без стоп-слов пусто — автор/fallback ниже */ }
+            } catch { /* empty without stop words too — author/fallback below */ }
           }
         }
       }
 
-      // По автору: сначала найти id, потом тянуть полную библиографию
-      // (пагинация OPDS, иначе у плодовитых авторов доступна только 1-я страница)
+      // By author: first find the id, then pull the full bibliography
+      // (OPDS pagination, otherwise only page 1 is available for prolific authors)
       if (q.authors?.length) {
         for (const a of q.authors) {
           try {
@@ -386,13 +386,13 @@ export function createFlibusta(deps: Deps) {
               }, { booksCount, targetTitle: opts?.targetTitle, onProgress });
               out.push(...found);
             }
-          } catch { /* автор не найден — пропускаем */ }
+          } catch { /* author not found — skip */ }
         }
       }
 
-      // Дедуп по id книги: разные издания (один /b/id) — схлопываем, но
-      // одноимённые книги разных авторов и разные тома сохраняем. Fallback на
-      // title+author, если id не извлёкся (запись без download-ссылки).
+      // Dedup by book id: different editions (same /b/id) collapse, but
+      // same-name books by different authors and separate volumes are kept. Fallback to
+      // title+author when no id was extracted (entry without a download link).
       const seen = new Set<string>();
       const dedupKey = (b: FlibustaBook): string =>
         b.id != null ? `id:${b.id}` : `${normName(b.title)}|${normName(b.author ?? "")}`;
@@ -405,7 +405,7 @@ export function createFlibusta(deps: Deps) {
 
       if (deduped.length) return deduped;
 
-      // Fallback на запасное зеркало если основной пуст
+      // Fallback to the backup mirror when the primary returns nothing
       if (deps.fallbackBase) {
         return this.searchBooksOn(q, deps.fallbackBase);
       }
@@ -422,18 +422,18 @@ export function createFlibusta(deps: Deps) {
       return out;
     },
 
-    // Детерминированный разбор перебором разбиений (без LLM). Запрос дробится
-    // на (автор-префикс, название-остаток) и наоборот; для каждого разбиения —
-    // поиск по автору + по названию. Для каждой книги запоминаем её лучшее
-    // разбиение (с самым длинным автором = конкретнее). Возвращает пул с
-    // (pt, authors) для max-relevance merge в orchestrator. Покрывает кейсы,
-    // где LLM промахивается (author-only, грязные реальные запросы) и служит
-    // страховкой при падении LLM. lim=4 ограничивает перебор → нагрузку на Flibusta.
+    // Deterministic parse by trying all splits (no LLM). The query is cut into
+    // (author-prefix, title-rest) and vice versa; for each split —
+    // an author search + a title search. For each book we keep its best
+    // split (longest author = more specific). Returns a pool with
+    // (pt, authors) for the max-relevance merge in orchestrator. Covers cases
+    // where the LLM misses (author-only, messy real queries) and backs up
+    // an LLM outage. lim=4 caps the enumeration → load on Flibusta.
     async splitSearchBooks(
       query: string,
     ): Promise<Array<{ book: FlibustaBook; pt: string; authors: string[] }>> {
       const tokens = normName(query).split(" ").filter(Boolean);
-      if (tokens.length < 2) return []; // split имеет смысл от 2 токенов
+      if (tokens.length < 2) return []; // split makes sense from 2 tokens
       const lim = Math.min(tokens.length, 4);
       type Split = { authors: string; title: string };
       const seen = new Set<string>();
@@ -473,11 +473,11 @@ export function createFlibusta(deps: Deps) {
           }
         }),
       );
-      // Для каждой книги — best разбиение (длиннее автор = конкретнее).
-      // Фильтр: книга валидна для разбиения, только если author-часть матчит
-      // автора книги (≥1 токен). Иначе разбиение для неё бессмысленно: напр.
-      // биография «Конан Дойл / Чертанов» при разбиении «шерлок холмс»+«конан
-      // дойл» — title совпадёт точно, но автор не тот, книга нерелевантна.
+      // For each book — the best split (longer author = more specific).
+      // Filter: a book is valid for a split only if the author part matches
+      // the book's author (≥1 token). Otherwise the split is meaningless for it: e.g.
+      // a "Conan Doyle / Chertanov" biography under the split "sherlock holmes"+"conan
+      // doyle" — the title matches exactly, but the author is wrong, the book is irrelevant.
       const best = new Map<string, { book: FlibustaBook; pt: string; authors: string[]; authorLen: number }>();
       for (const { sp, books } of results) {
         const pt = normName(sp.title);
@@ -486,12 +486,12 @@ export function createFlibusta(deps: Deps) {
         const titleTokens = pt.split(" ").filter(Boolean);
         for (const book of books) {
           const ba = normName(book.author ?? "").split(" ").filter(Boolean);
-          // author-часть разбиения должна матчить автора книги.
+          // The author part of the split must match the book's author.
           if (authorTokens.length && !authorTokens.some((t) => ba.includes(t))) continue;
-          // Title-часть должна объясняться — входить в название или в автора.
-          // Иначе книга попала только по author-части (тезка по имени/фамилии),
-          // а остальной запрос к ней отношения не имеет: «юрий»→Никитин при
-          // запросе «юрий лотман» — «лотман» ни в названии, ни в авторе Никитина.
+          // The title part must be explained — appear in the title or in the author.
+          // Otherwise the book matched only via the author part (a first/last-name namesake),
+          // and the rest of the query has nothing to do with it: "yuri"→Nikitin under
+          // the query "yuri lotman" — "lotman" is in neither Nikitin's titles nor his name.
           if (titleTokens.length) {
             const tn = normName(book.title);
             if (!titleTokens.every((t) => tn.includes(t) || ba.includes(t))) continue;

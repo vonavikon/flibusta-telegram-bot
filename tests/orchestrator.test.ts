@@ -20,7 +20,7 @@ describe("orchestrator", () => {
     const r = await o.search("белый клык джек лондон", 5);
     expect(m.llm.parseQuery).toHaveBeenCalledWith("белый клык джек лондон");
     expect(m.flibusta.searchBooks).toHaveBeenCalled();
-    // Ранжирование детерминированное, второй LLM-вызов не нужен
+    // Ranking is deterministic, no second LLM call needed
     expect(m.llm.rankBooks).not.toHaveBeenCalled();
     expect(r.books[0].title).toBe("Белый Клык");
     expect(r.degraded).toBe(false);
@@ -93,9 +93,9 @@ describe("orchestrator", () => {
     const o = createOrchestrator(m.llm as any, m.flibusta as any);
     const kinds: string[] = [];
     await o.search("белый клык", 5, (p) => kinds.push(p.kind));
-    // Мок flibusta не звони paging/author-found/title-search (то реальный flibusta,
-    // отдельный тест); orchestrator генерирует parsing, searching, splitting
-    // (запрос из 2 токенов) и ranking сам.
+    // The flibusta mock doesn't call paging/author-found/title-search (that's real flibusta,
+    // a separate test); the orchestrator generates parsing, searching, splitting
+    // (2-token query) and ranking on its own.
     expect(kinds).toEqual(["parsing", "searching", "splitting", "ranking"]);
   });
 
@@ -121,7 +121,7 @@ describe("orchestrator", () => {
     const books = [{ title: "Белый Клык", formats: ["fb2"] }];
     const m = makeMocks(books);
     const o = createOrchestrator(m.llm as any, m.flibusta as any);
-    await o.search("белый клык", 5); // прогрев кэша
+    await o.search("белый клык", 5); // warm up the cache
     const kinds: string[] = [];
     await o.search("белый клык", 5, (p) => kinds.push(p.kind));
     expect(kinds).toEqual([]);
@@ -143,9 +143,9 @@ describe("relevance: серия", () => {
 
   it("точное совпадение названия доминирует над серией конкурента", () => {
     const series = "песнь льда и пламени";
-    // A: точное название, чужая серия
+    // A: exact title, wrong series
     const a = relevance("игра престолов", [], series, { title: "Игра престолов", series: "Другая" } as any);
-    // B: неточное название, но нужная серия
+    // B: inexact title, but the right series
     const b = relevance("игра престолов", [], series, { title: "Игра", series: "Песнь льда и пламени" } as any);
     expect(a).toBeGreaterThan(b);
   });
@@ -158,9 +158,9 @@ describe("relevance: серия", () => {
 });
 
 describe("relevance: нормализация ё/е", () => {
-  // Flibusta хранит имена без ё («Федор»), пользователи пишут с ё («Фёдор»).
-  // Без приведения ё→е автор-матч ломается и фильтр тезок в split отсекает
-  // книги самого автора: title-токен «фёдор» не находил «федор» в авторе книги.
+  // Flibusta stores names without the "yo" letter ("Fedor"), users type it ("Fyodor").
+  // Without the yo→e fold the author match breaks, and the namesake filter in split cuts
+  // the author's own books: the title token "fyodor" didn't match "fedor" in the book's author.
   it("«Фёдор» в запросе матчит «Федор» в авторе книги", () => {
     const score = relevance("", ["Достоевский Фёдор"], undefined, {
       title: "Бесы",
@@ -171,12 +171,12 @@ describe("relevance: нормализация ё/е", () => {
 });
 
 describe("relevance: автор, обратный порядок слов", () => {
-  // Дефект D: LLM отдаёт автора как «Имя Фамилия» (Лев Толстой), Flibusta хранит
-  // «Фамилия Имя Отчество» (Толстой Лев Николаевич). Точного вхождения нет
-  // (подстрока не матчится из-за порядка), остаётся токен-матч — 2 токена × 8 =
-  // 16 < порога lowRelevance (50). Точный поиск по автору помечался «по
-  // приближению». Полное покрытие токенов = те же имена в другом порядке, это
-  // надёжное совпадение автора — приравниваем к точному (60).
+  // Defect D: the LLM returns the author as "First Last" (Lev Tolstoy), Flibusta stores
+  // "Last First Patronymic" (Tolstoy Lev Nikolaevich). No exact inclusion
+  // (the substring doesn't match because of the order), leaving a token match — 2 tokens × 8 =
+  // 16 < the lowRelevance threshold (50). An exact author search was labeled an
+  // "approximate match". Full token coverage = the same names in a different order; that is
+  // a reliable author match — treat it as exact (60).
   it("полное покрытие токенов автора = 60 даже при обратном порядке слов", () => {
     const score = relevance("", ["Лев Толстой"], undefined, {
       title: "Анна Каренина",
@@ -244,10 +244,10 @@ describe("порог lowRelevance", () => {
 });
 
 describe("author-only поиск (без названия)", () => {
-  // Воспроизводит дефект B: при author-only запросе parsed.title нет, и pt
-  // приравнивался к сырому запросу. Тогда книги, где имя автора входит в
-  // название (биографии, литературоведение чужих авторов), получали +600 за
-  // вхождение и обгоняли книги самого автора.
+  // Reproduces defect B: for an author-only query parsed.title is absent, and pt
+  // was set to the raw query. Then books where the author's name is part of
+  // the title (biographies, literary criticism of other authors) got +600 for the
+  // inclusion and outranked the author's own books.
   it("книга с именем автора в названии (чужая) не обгоняет книги самого автора", async () => {
     const books = [
       { title: "Беседы о русской культуре", author: "Лотман Юрий Михайлович", formats: ["fb2"] },
@@ -262,9 +262,9 @@ describe("author-only поиск (без названия)", () => {
     expect(r.books[0].author).toBe("Лотман Юрий Михайлович");
   });
 
-  // Воспроизводит дефект C: author-only совпадение (+30) ниже порога
-  // MIN_RELEVANCE (50), поэтому точный поиск по автору помечался lowRelevance
-  // («по приближению»). Это валидный поиск — пометки быть не должно.
+  // Reproduces defect C: an author-only match (+30) is below the
+  // MIN_RELEVANCE threshold (50), so an exact author search was flagged lowRelevance
+  // ("approximate match"). This is a valid search — there should be no flag.
   it("точный поиск по автору не помечается lowRelevance", async () => {
     const books = [
       { title: "Беседы о русской культуре", author: "Лотман Юрий Михайлович", formats: ["fb2"], downloadsCount: "1000" },
@@ -278,10 +278,10 @@ describe("author-only поиск (без названия)", () => {
     expect(r.lowRelevance).toBeFalsy();
   });
 
-  // Воспроизводит «Александр Пушкин»: split-разбиение {authors:"александр",
-  // title:"пушкин"} находит книги О Пушкине авторов по имени «Александр»
-  // (Федута, Гуревич) — title «пушкин» действительно в их названиях. Без штрафа
-  // за чужого автора они набирают +600 за title и обгоняют книги Пушкина.
+  // Reproduces "Alexander Pushkin": the split {authors:"alexandr",
+  // title:"pushkin"} finds books ABOUT Pushkin by authors named "Alexander"
+  // (Feduta, Gurevich) — the title "pushkin" is indeed in their titles. Without the
+  // wrong-author penalty they earn +600 for title and outrank Pushkin's own books.
   it("split-книга о авторе (чужой автор, имя автора в названии) не обгоняет книги автора", async () => {
     const llmBooks = [
       { title: "Барышня-крестьянка", author: "Пушкин Александр Сергеевич", formats: ["fb2"], downloadsCount: "35000" },
@@ -300,8 +300,8 @@ describe("author-only поиск (без названия)", () => {
 });
 
 describe("relevance: fuzzy-матч названия с опечаткой (RC2)", () => {
-  // gpt-4.1-nano не правит «Таяс»→«Таис»; строгое вхождение слова (+15) не
-  // набирается, книга тонет. Пословный Левенштейн ловит опечатку и даёт бонус.
+  // gpt-4.1-nano doesn't fix "Tayas"→"Tais"; the strict word inclusion (+15) is not
+  // earned, the book sinks. Word-level Levenshtein catches the typo and adds a bonus.
   it("«Таяс Афинская» fuzzy-матчит «Таис Афинская» (≥300)", () => {
     const s = relevance("таяс афинская", ["ефремов"], undefined, {
       title: "Таис Афинская", author: "Ефремов Иван",
@@ -328,8 +328,8 @@ describe("relevance: fuzzy-матч названия с опечаткой (RC2)
 });
 
 describe("royallib как вторичный источник", () => {
-  // royallib добирает книги, которых нет во flibusta (по title|author), но не
-  // дублирует уже найденное: flibusta приоритетна. Проверяем оба кейса.
+  // royallib adds books missing from flibusta (by title|author) but doesn't
+  // duplicate what's already found: flibusta takes priority. Both cases are tested.
   const mkRoyallib = (books: any[]) => ({
     searchBooks: vi.fn().mockResolvedValue(books),
   });
@@ -353,7 +353,7 @@ describe("royallib как вторичный источник", () => {
     const roy = mkRoyallib(royBooks);
     const o = createOrchestrator(m.llm as any, m.flibusta as any, {}, roy as any);
     const r = await o.search("белый клык джек лондон", 5);
-    // Книга одна, и это flibusta-вариант (без provider="royallib")
+    // One book left, the flibusta variant (without provider="royallib")
     expect(r.books).toHaveLength(1);
     expect(r.books[0].provider).toBeUndefined();
     expect(r.books[0].formats).toEqual(["fb2"]);
@@ -366,7 +366,7 @@ describe("royallib как вторичный источник", () => {
     const roy = mkRoyallib(royBooks);
     const o = createOrchestrator(m.llm as any, m.flibusta as any, {}, roy as any);
     const r = await o.search("фрегат паллада гончаров", 5);
-    // Фамилия «гончаров» совпадает — дубль схлопнут, остаётся flibusta-вариант.
+    // The surname "goncharov" matches — the duplicate collapsed, the flibusta variant stays.
     expect(r.books).toHaveLength(1);
     expect(r.books[0].provider).toBeUndefined();
   });
@@ -380,8 +380,8 @@ describe("royallib как вторичный источник", () => {
 });
 
 describe("RC3: путаница author/title", () => {
-  // LLM на запросе из названия без автора занёс его в authors → ложный
-  // author-поиск + штраф. Если единственный «автор» = названию — убираем его.
+  // The LLM put a title-only query's title into authors → a false
+  // author search + penalty. If the single "author" equals the title — drop it.
   it("LLM занёс название в authors → author убран, книга top-1 без lowRelevance", async () => {
     const books = [{ title: "Таис Афинская", author: "Ефремов Иван", formats: ["fb2"], downloadsCount: "5000" }];
     const m = {
@@ -402,14 +402,14 @@ describe("RC3: путаница author/title", () => {
     };
     const o = createOrchestrator(m.llm as any, m.flibusta as any);
     const r = await o.search("Пушкин", 5);
-    expect(r.books[0].title).toBe("Пушкинская эпоха"); // author-поиск сохранился
+    expect(r.books[0].title).toBe("Пушкинская эпоха"); // author search preserved
   });
 });
 
 describe("автор-строка поиска: слова, потерянные LLM", () => {
-  // Кейс жалобы: «Васильев Борис» → LLM отдала authors:["Васильев"], потеряв
-  // имя. В каталоге по голой фамилии ловится техническая заглушка. Слова
-  // запроса, не занятые title/series/genre/authors, возвращаются в автор-строку.
+  // Complaint case: "Vasilev Boris" → the LLM returned authors:["Vasilev"], losing
+  // the first name. In the catalog, the bare surname matches a technical stub. Query words
+  // not taken by title/series/genre/authors are returned to the author string.
   it("LLM отдала только фамилию: flibusta получает полную пару из запроса", async () => {
     const books = [{ title: "Не стреляйте белых лебедей", author: "Васильев Борис Львович", formats: ["fb2"] }];
     const m = {

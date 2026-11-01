@@ -6,29 +6,29 @@ import AdmZip from "adm-zip";
 export type DownloadMeta = { size: number };
 type OnFile = (filePath: string) => Promise<DownloadMeta>;
 
-// flibusta заворачивает эти форматы в zip: /b/ID/fb2 отдаёт application/zip с
-// одним .fb2 внутри. Если отправить такой zip под именем «Книга.fb2», читалка
-// ждёт XML и файл не открывается — отсюда впечатление, что «работает только
-// mobi» (он идёт сырым файлом). Распаковываем внутренний файл перед отправкой.
-// pdf и djvu добавлены из-за ссылок /b/ID/download (type pdf+zip) — там pdf
-// внутри zip-обёртки; разворачивание безопасно: unwrapZip распаковывает только
-// файлы с PK-магией, сырой pdf (%PDF-) и mobi проходят как есть.
-// epub НЕ трогаем: epub сам по себе zip, вскрывать нельзя.
+// flibusta wraps these formats in zip: /b/ID/fb2 returns application/zip with
+// one .fb2 inside. Send that zip named "Book.fb2" and the reader
+// expects XML — the file won't open, hence the impression that "only mobi
+// works" (it goes as a raw file). We unpack the inner file before sending.
+// pdf and djvu were added because of /b/ID/download links (type pdf+zip) — the pdf
+// sits inside a zip wrapper; unwrapping is safe: unwrapZip only unpacks
+// files with PK magic; raw pdf (%PDF-) and mobi pass through as is.
+// epub is NOT touched: epub is itself a zip, it must not be opened.
 const WRAP_FORMATS = new Set(["fb2", "txt", "rtf", "html", "doc", "pdf", "djvu"]);
 
 function unwrapZip(buf: Buffer): Buffer {
-  if (!(buf[0] === 0x50 && buf[1] === 0x4b)) return buf; // PK — не zip
+  if (!(buf[0] === 0x50 && buf[1] === 0x4b)) return buf; // PK — not a zip
   try {
     const datas = new AdmZip(buf)
       .getEntries()
       .filter((e) => !e.entryName.endsWith("/"))
       .map((e) => e.getData());
     if (!datas.length) return buf;
-    // flibusta: один внутренний файл. Если несколько — крупнейший, это сама книга.
+    // flibusta: one inner file. If several — the largest, that's the book itself.
     datas.sort((a, b) => b.length - a.length);
     return datas[0];
   } catch {
-    return buf; // битый zip — лучше отправить как есть, чем уронить скачивание
+    return buf; // broken zip — better to send as is than to fail the download
   }
 }
 
@@ -45,9 +45,9 @@ export function createDownloader(tmpDir: string) {
       if (!res.ok || !res.body) {
         throw new Error(`скачивание не удалось: ${res.status} для ${url}`);
       }
-      // Стриминговое чтение вместо arrayBuffer(): считаем скачанные байты для
-      // прогресса. Content-Length бывает null при chunked/zip-ответах — тогда
-      // total остаётся null и проценты не считаются.
+      // Streaming read instead of arrayBuffer(): count downloaded bytes for
+      // progress. Content-Length can be null for chunked/zip responses — then
+      // total stays null and no percentages are computed.
       const totalRaw = res.headers.get("content-length");
       const total = totalRaw ? Number(totalRaw) : null;
       const reader = res.body.getReader();
@@ -60,8 +60,8 @@ export function createDownloader(tmpDir: string) {
         if (value) {
           chunks.push(value);
           downloaded += value.byteLength;
-          // Троттлинг ~1 раз/с: чаще нет смысла, Telegram editMessage всё равно
-          // ограничивает, а лишние правки съедают лимит.
+          // Throttle to ~1/s: faster is pointless, Telegram editMessage is
+          // rate-limited anyway, and extra edits burn the limit.
           const now = Date.now();
           if (onProgress && now - lastReport >= 1000) {
             onProgress({ downloaded, total });
@@ -69,8 +69,8 @@ export function createDownloader(tmpDir: string) {
           }
         }
       }
-      // Финальный отчёт — всегда, чтобы потребитель видел итоговое значение
-      // (на быстром пути это единственный вызов onProgress).
+      // Final report — always, so the consumer sees the final value
+      // (on the fast path this is the only onProgress call).
       if (onProgress) onProgress({ downloaded, total });
       let buf: Buffer = Buffer.concat(chunks);
       if (fmt && WRAP_FORMATS.has(fmt)) buf = unwrapZip(buf);

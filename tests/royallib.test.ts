@@ -1,9 +1,9 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { createRoyallib } from "../src/search/royallib.js";
 
-// Минимальные HTML-сниппеты, повторяющие реальную структуру royallib (см. дампы
-// /tmp/royallib_search.html и /tmp/royallib_card.html). Важно: секции «Авторы» и
-// «Серии» идут ДО «Книги» — парсер должен брать только книги.
+// Minimal HTML snippets mirroring royallib's real structure (see the dumps
+// /tmp/royallib_search.html and /tmp/royallib_card.html). Important: the «Авторы» (Authors) and
+// «Серии» (Series) sections come BEFORE «Книги» (Books) — the parser must take only books.
 const SEARCH_HTML = `<html><body>
 <table>
   <tr><td><h2 class=viewbook>Авторы</h2></td></tr>
@@ -53,13 +53,13 @@ describe("royallib", () => {
     const r = createRoyallib({ base: "https://royallib.com" });
     const books = await r.searchBooks({ title: "смерть ивана ильича" });
 
-    // Обе книги из секции «Книги» (Толстой + Рыбаков), секция «Авторы» не попала.
+    // Both books are from the «Книги» (Books) section (Tolstoy + Rybakov); «Авторы» (Authors) didn't leak in.
     expect(books).toHaveLength(2);
     expect(books[0].title).toBe("Смерть Ивана Ильича");
     expect(books[0].author).toBe("Толстой Лев");
     expect(books[1].author).toBe("Рыбаков Вячеслав");
 
-    // Форматы и обложка/жанр/аннотация подтянуты из карточки.
+    // Formats and cover/genre/annotation pulled from the card.
     expect(books[0].provider).toBe("royallib");
     expect(books[0].formats).toContain("fb2");
     expect(books[0].formats).toContain("epub");

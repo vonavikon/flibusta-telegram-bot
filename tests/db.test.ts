@@ -3,8 +3,8 @@ import { createDb, type Db } from "../src/db.js";
 
 describe("db", () => {
   let db: Db;
-  // Окна topBooks/getStats и т.п. считают от Date.now(). Фиксируем now=epoch,
-  // чтобы sinceTs(days) стал отрицательным и события с маленькими ts попадали в окно.
+  // topBooks/getStats and similar windows count from Date.now(). We pin now=epoch
+  // so that sinceTs(days) goes negative and events with small ts fall inside the window.
   beforeEach(() => { vi.useFakeTimers({ now: new Date(0) }); db = createDb(":memory:"); });
   afterEach(() => { db.close(); vi.useRealTimers(); });
 

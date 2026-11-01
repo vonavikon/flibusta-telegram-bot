@@ -1,6 +1,6 @@
-// Минимальный интерфейс API Telegram под статус-сообщения. Берём три метода,
-// чтобы тестировать на простой заглушке и не тащить весь тип grammy.Bot["api"].
-// bot.api grammy удовлетворяет этому структурно.
+// Minimal Telegram API interface for status messages. We take three methods
+// so tests can run on a simple stub without pulling in the whole grammy.Bot["api"] type.
+// grammy's bot.api satisfies this structurally.
 export type StatusApi = {
   sendMessage(chatId: number, text: string, extra?: object): Promise<{ message_id: number }>;
   editMessageText(chatId: number, messageId: number, text: string, extra?: object): Promise<unknown>;
@@ -12,8 +12,8 @@ export type MsgRef = { chatId: number; msgId: number };
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
 export function createStatusMessenger(api: StatusApi) {
-  // Последний текст на сообщение — чтобы не звать editMessageText с тем же текстом
-  // (Telegram ответит 400 "message is not modified").
+  // Last text per message — to avoid calling editMessageText with the same text
+  // (Telegram replies 400 "message is not modified").
   const lastText = new Map<string, string>();
 
   return {
@@ -38,11 +38,11 @@ export function createStatusMessenger(api: StatusApi) {
             typeof err.parameters?.retry_after === "number" &&
             attempt === 0
           ) {
-            // RetryAfter: ждём сколько просит Telegram, один ретрай.
+            // RetryAfter: wait as long as Telegram asks, one retry.
             await sleep(err.parameters.retry_after * 1000);
             continue;
           }
-          // 400 "message is not modified" и прочее — статус не должен ронять основной поток.
+          // 400 "message is not modified" and the like — status must not break the main flow.
           console.warn("status edit failed:", (e as Error).message ?? e);
           return;
         }

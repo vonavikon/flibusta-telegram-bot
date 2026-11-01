@@ -5,9 +5,9 @@ import { TITLE_STOP_WORDS } from "./flibusta.js";
 
 export type SearchResult = { books: FlibustaBook[]; degraded: boolean; lowRelevance?: boolean };
 
-// Прогресс поиска для стриминга в чат. paging/author-found приходят из глубины
-// пагинации flibusta (через адаптер), parsing/searching/ranking — из самого
-// orchestrator. bot.ts сводит это в тексты статусов с throttle.
+// Search progress for streaming into the chat. paging/author-found come from deep inside
+// flibusta pagination (via the adapter); parsing/searching/ranking come from the
+// orchestrator itself. bot.ts turns these into throttled status texts.
 export type SearchProgress =
   | { kind: "parsing" }
   | { kind: "searching" }
@@ -21,16 +21,16 @@ export type SearchProgress =
 const norm = (s: string): string =>
   s.toLowerCase().replace(/ё/g, "е").replace(/[«»"'!.,?;:()\[\]]/g, " ").replace(/\s+/g, " ").trim();
 
-// Мягкий порог релевантности. Если лучшее совпадение слабее (ни название, ни
-// автор не попали) — выдача помечается lowRelevance, бот показывает «по приближению».
-// Граница 50: совпадение автора (+60) и слова названия (+15×N) перешагивают её,
-// автор-only поиск остаётся нормальной выдачей, а не «по приближению».
+// Soft relevance threshold. If the best match is weaker (neither title nor
+// author hit) — the result is flagged lowRelevance and the bot shows an "approximate match" note.
+// The 50 boundary: an author match (+60) and title words (+15×N) step over it,
+// so an author-only search stays a normal result, not an "approximate one".
 const MIN_RELEVANCE = 50;
 
-// Левенштейн (DP, два ряда) + нормализованное сходство 1 - dist/maxLen.
-// Нужен для fuzzy-матча названия с опечаткой: gpt-4.1-nano не правит «Таяс»→
-// «Таис», а триграммы на 4-буквенных словах дают 0 (у {тая,аяс} и {таи,аис}
-// нет пересечения). Левенштейн ловит 1 замену: sim(«таяс»,«таис»)=0.75.
+// Levenshtein (DP, two rows) + normalized similarity 1 - dist/maxLen.
+// Needed for fuzzy title matching with a typo: gpt-4.1-nano does not fix "Tayas"→
+// "Tais", and trigrams on 4-letter words give 0 ({tay,aas} and {tai,ais}
+// don't intersect). Levenshtein catches a single substitution: 0.75 for 4-letter words.
 function levenshtein(a: string, b: string): number {
   const m = a.length;
   const n = b.length;
@@ -53,12 +53,12 @@ function similarity(a: string, b: string): number {
   return maxLen ? 1 - levenshtein(a, b) / maxLen : 1;
 }
 
-// Общий deadline на поисковый пул. Медленная/затроттленная Flibusta иначе
-// держит union-поиск десятками секунд: per-call таймауты (5с) срабатывают
-// по очереди, а split перебирает несколько вызовов последовательно в каждом
-// разбиении. Потолок отбрасывает зависший пул (catch → []) и не блокирует
-// выдачу другого. 16с: нормальный пул 1-7с + запас под один retry флака flibusta
-// (5с×2 на title), хвост отсекается до «вечного Ищу…».
+// Overall deadline for the search pool. A slow/throttled Flibusta otherwise
+// holds the union search for tens of seconds: per-call timeouts (5s) fire
+// one after another, and split walks several calls sequentially in each
+// candidate split. The cap drops a hung pool (catch → []) and doesn't block
+// the other pool's result. 16s: a normal pool takes 1-7s + headroom for one flibusta flake retry
+// (5s×2 on title); the tail is cut before an "eternal Searching…".
 const SEARCH_DEADLINE_MS = 16_000;
 function deadline<T>(p: Promise<T>): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -70,10 +70,10 @@ function deadline<T>(p: Promise<T>): Promise<T> {
   });
 }
 
-// Детерминированная релевантность. Оцениваем не по сырому запросу, а по тому,
-// что LLM уже отделил: название (title) и авторы (authors). Иначе флексии
-// автора («джеком», «лондоном») подтягивали посторонние книги вровень с точным
-// совпадением названия. Точное совпадение названия решает однозначно.
+// Deterministic relevance. We score not against the raw query but against what
+// the LLM already separated: the title and the authors. Otherwise author
+// inflections ("dzhekom", "londonom") pulled in unrelated books level with an exact
+// title match. An exact title match decides outright.
 export function relevance(pt: string, authors: string[], series: string | undefined, book: FlibustaBook): number {
   const title = norm(book.title);
   const author = norm(book.author ?? "");
@@ -84,19 +84,19 @@ export function relevance(pt: string, authors: string[], series: string | undefi
     else if (pt.includes(title)) titleScore += 400;
     else titleScore += pt.split(" ").filter(Boolean).filter((t) => title.includes(t)).length * 15;
   }
-  // Fuzzy-матч названия с опечаткой (RC2): LLM не правит «Таяс»→«Таис», и строгое
-  // вхождение слова (+15) не набирается. Сравниваем пословно Левенштейном: слово
-  // запроса, которого нет в названии точно, но близкое к слову названия (sim>0.7)
-  // — считаем опечаткой и даём бонус. Слабее точного вхождения (600), но поднимает
-  // книгу над author-only хвостом. Только когда нет сильного совпадения (<100):
-  // иначе точное/вхождение уже решили однозначно.
+  // Fuzzy title match with a typo (RC2): the LLM doesn't fix "Tayas"→"Tais", and the strict
+  // word inclusion (+15) is not earned. We compare word by word with Levenshtein: a query
+  // word absent from the title exactly but close to a title word (sim>0.7)
+  // — count it as a typo and add a bonus. Weaker than exact inclusion (600), but lifts the
+  // book above the author-only tail. Only when there is no strong match (<100):
+  // otherwise exact/inclusion already decided it.
   if (pt && titleScore < 100) {
     const ptWords = pt.split(" ").filter(Boolean);
     const titleWords = title.split(" ").filter(Boolean);
     if (titleWords.length) {
       let fuzzyHits = 0;
       for (const w of ptWords) {
-        if (titleWords.includes(w)) continue; // точное слово уже учтено в titleScore
+        if (titleWords.includes(w)) continue; // exact word already counted in titleScore
         let best = 0;
         for (const tw of titleWords) best = Math.max(best, similarity(w, tw));
         if (best > 0.7) fuzzyHits++;
@@ -104,9 +104,9 @@ export function relevance(pt: string, authors: string[], series: string | undefi
       if (fuzzyHits > 0) titleScore += 300 * Math.min(fuzzyHits, 2);
     }
   }
-  // Совпадение автора — основной сигнал author-only поиска: не слабее серии
-  // (+60) и превышает порог lowRelevance (50), иначе точный поиск по автору
-  // помечался бы «по приближению».
+  // Author match — the main signal of author-only search: not weaker than a series
+  // (+60) and above the lowRelevance threshold (50); otherwise an exact author search
+  // would be flagged as an "approximate match".
   let authorScore = 0;
   let authorMatched = false;
   for (const a of authors) {
@@ -117,24 +117,24 @@ export function relevance(pt: string, authors: string[], series: string | undefi
       const at = an.split(" ").filter(Boolean);
       const hit = at.filter((t) => author.includes(t));
       if (hit.length) {
-        // Полное покрытие токенов — те же имена в другом порядке/с отчеством
-        // (LLM «Лев Толстой» vs Flibusta «Толстой Лев Николаевич»). Это надёжное
-        // совпадение автора, приравниваем к точному. Частичное — слабый сигнал.
+        // Full token coverage — the same names in a different order/with a patronymic
+        // (LLM "Lev Tolstoy" vs Flibusta "Tolstoy Lev Nikolaevich"). This is a reliable
+        // author match, equal to an exact one. Partial coverage is a weak signal.
         authorScore += hit.length === at.length ? 60 : hit.length * 8;
         authorMatched = true;
       }
     }
   }
-  // Штраф за чужого автора: в запросе есть автор, но книга — не его. Типичный
-  // случай — книги ОБ авторе (биографии, литературоведение: «Пушкинская эпоха»
-  // Федуты при поиске «Александр Пушкин»), набирающие title-бонус за имя автора
-  // в названии. Подавляем title-сигнал — книга опускается ниже любой книги
-  // самого автора. title-only запросы (authors пуст) штрафа не получают.
+  // Wrong-author penalty: the query names an author, but the book is not theirs. Typical
+  // case — books ABOUT the author (biographies, literary criticism: "Pushkinskaya epokha"
+  // by Feduta under the query "Alexander Pushkin") that earn a title bonus for the
+  // author's name in the title. We suppress the title signal — the book drops below any
+  // book by the author themself. title-only queries (authors empty) get no penalty.
   if (authors.length && !authorMatched && titleScore > 15) titleScore = 15;
   let seriesScore = 0;
-  // Серия: конкретный сигнал, слабее совпадения названия, сильнее авторских
-  // токенов. Срабатывает только если LLM вытащил серию из запроса — иначе ветка
-  // пропускается и на ранг нулевой эффект (старые тесты, серия не задана).
+  // Series: a specific signal, weaker than a title match, stronger than author
+  // tokens. Fires only when the LLM pulled a series from the query — otherwise the
+  // branch is skipped with zero effect on rank (old tests, no series set).
   if (series) {
     const sn = norm(series);
     const bn = norm(book.series ?? "");
@@ -152,16 +152,16 @@ export function createOrchestrator(
   opts: { cacheTtlSec?: number; cacheEmptyTtlSec?: number; cacheMax?: number } = {},
   royallib?: Royallib,
 ) {
-  // In-memory кэш результатов поиска. Одинаковые запросы разных пользователей
-  // («пелевин», «гари поттер») иначе бьют по flibusta и LLM десятками раз.
-  // TTL-кэш отдаёт повторный запрос без единого сетевого вызова. Ранг
-  // детерминированный, книги не меняются каждую минуту — кэшировать безопасно.
-  // Сбрасывается при рестарте; для поискового кэша персистентность избыточна.
+  // In-memory search result cache. Identical queries from different users
+  // ("pelevin", "harry potter") would otherwise hit flibusta and the LLM dozens of times.
+  // The TTL cache serves a repeat without a single network call. Ranking is
+  // deterministic and books don't change every minute — caching is safe.
+  // Reset on restart; persistence is overkill for a search cache.
   const ttlMs = (opts.cacheTtlSec ?? 21600) * 1000;
-  // Пустой результат («ничего не найдено») кэшируем коротко: сбой источника
-  // нельзя превращать в 6-часовой отказ. 10 минут гасят повторный мусор
-  // (опечатки, несуществующие книги), но временная недоступность Flibusta
-  // переживается за минуты, а не часы.
+  // Empty results ("nothing found") are cached briefly: a source outage
+  // must not become a 6-hour refusal. 10 minutes dampens repeated junk
+  // (typos, nonexistent books), while temporary Flibusta unavailability
+  // is waited out in minutes, not hours.
   const emptyTtlMs = (opts.cacheEmptyTtlSec ?? 600) * 1000;
   const max = opts.cacheMax ?? 2000;
   type Entry = { result: SearchResult; expiresAt: number };
@@ -177,7 +177,7 @@ export function createOrchestrator(
     if (cache.size >= max) {
       const now = Date.now();
       for (const [k, v] of cache) if (now > v.expiresAt) cache.delete(k);
-      // Протухших не оказалось — выкидываем самую старую по порядку вставки
+      // No expired entries — drop the oldest by insertion order
       if (cache.size >= max) {
         const oldest = cache.keys().next().value;
         if (oldest !== undefined) cache.delete(oldest);
@@ -194,7 +194,7 @@ export function createOrchestrator(
     ): Promise<SearchResult> {
       const key = norm(rawQuery);
       const hit = cacheGet(key);
-      if (hit) return hit; // кэш-хит — onProgress не зовётся, быстрый путь без статуса
+      if (hit) return hit; // cache hit — onProgress not called, fast path without status
 
       let parsed;
       let degraded = false;
@@ -202,37 +202,37 @@ export function createOrchestrator(
         onProgress?.({ kind: "parsing" });
         parsed = await llm.parseQuery(rawQuery);
       } catch (e) {
-        // Деградация: запрос целиком как title, без разбора. Сюда же падает
-        // таймаут LLM — логируем, чтобы видеть частоту уходов в degraded.
+        // Degradation: the whole query as title, no parsing. LLM timeouts
+        // land here too — logged to see how often we go degraded.
         console.warn("llm parse failed, degraded:", (e as Error).message);
         parsed = { title: rawQuery };
         degraded = true;
       }
 
-      // pt вычисляем до поиска: нужен как targetTitle для сигнала «нашёл» в
-      // пагинации (пользователь видит, что нужная книга попалась на странице) и
-      // для ранжирования. Если LLM не дал title (author-only поиск), pt пуст:
-      // нельзя подставлять сырой запрос — он содержит имя автора, и чужие книги с
-      // этим именем в названии (биографии, литературоведение) получат +600 и
-      // обгонят книги самого автора.
+      // pt is computed before the search: it is the targetTitle for the "found" signal in
+      // pagination (the user sees the wanted book appear on a page) and
+      // it feeds ranking. If the LLM gave no title (author-only search), pt is empty:
+      // substituting the raw query is not allowed — it contains the author's name, and other
+      // people's books with that name in the title (biographies, criticism) would get +600 and
+      // outrank the author's own books.
       const pt = norm(parsed.title ?? "");
-      // RC3: LLM занёс название в authors (путаница сущностей на запросе из
-      // названия без автора: «Таис Афинская» → authors:["Таис Афинская"]). Авторский
-      // поиск тогда идёт вхолостую + срабатывает штраф за «чужого автора» и топит
-      // нужную книгу с #1 на #3. Если единственный «автор» совпадает с названием —
-      // убираем: это название, не автор. Биография «Пушкин» (author!=title) и
-      // несколько авторов не затрагиваются.
+      // RC3: the LLM put the title into authors (entity confusion on a title-only
+      // query: "Tais Afinskaya" → authors:["Tais Afinskaya"]). The author
+      // search then runs in vain + the wrong-author penalty fires and sinks
+      // the wanted book from #1 to #3. If the single "author" equals the title —
+      // drop it: it's a title, not an author. The "Pushkin" biography (author!=title) and
+      // multiple authors are not affected.
       let authors = parsed.authors ?? [];
       if (authors.length === 1 && pt && norm(authors[0]) === pt) authors = [];
 
-      // Слова запроса, не объяснённые разбором. LLM нередко теряет имя автора
-      // («Васильев Борис» → authors:["Васильев"]), и по голой фамилии каталог
-      // отдаёт заглушку-дубль вместо живого автора. Если автор один и остаток
-      // запроса — 1-2 слова, возвращаем их в автор-строку ПОИСКА (flibusta и
-      // royallib); ранжирование остаётся на исходных authors — фамилии из
-      // запроса хватает, чтобы сматчить полное имя в библиографии. Предлоги из
-      // остатка выкидываем («Аркадий и Борис Стругацкие» → «Стругацкие Аркадий
-      // Борис»). Более двух слов не берём: это уже не имя, а мусор запроса.
+      // Query words left unexplained by the parse. The LLM often loses the author's first
+      // name ("Vasilev Boris" → authors:["Vasilev"]), and for the bare surname the catalog
+      // returns a duplicate stub instead of the real author. If there is one author and the
+      // rest of the query is 1-2 words, we put them back into the SEARCH author string
+      // (flibusta and royallib); ranking stays on the original authors — the surname
+      // from the query is enough to match the full name in the bibliography. Prepositions are
+      // dropped from the rest ("Arkady i Boris Strugatsky" → "Strugatsky Arkady
+      // Boris"). More than two words is not taken: that's not a name, that's query noise.
       const used = new Set(
         [parsed.title, parsed.series, parsed.genre, ...authors]
           .flatMap((s) => (s ? norm(s).split(" ") : []))
@@ -250,17 +250,17 @@ export function createOrchestrator(
           : parsed;
 
       onProgress?.({ kind: "searching" });
-      // split работает от 2 токенов и идёт параллельно как страховка; стримим
-      // отдельный статус, чтобы title-only путь не молчал от «Ищу...» до «Сравниваю...».
+      // split starts from 2 tokens and runs in parallel as a safety net; we stream
+      // a separate status so the title-only path doesn't stay silent from "Searching…" to "Comparing…".
       if (key.split(" ").filter(Boolean).length >= 2) onProgress?.({ kind: "splitting" });
-      // UNION: LLM-разбор и детерминированный split-search — параллельно.
-      // split покрывает кейсы, где LLM промахивается (author-only, грязные
-      // реальные запросы) и служит страховкой при падении LLM. Каждый пул
-      // оценивается своим разбором; в общий пул книга идёт с максимумом оценок
-      // — «лучший сценарий» её нахождения. ~80% rel@3 против 69% у LLM-соло.
-      // Адаптер пробрасывает прогресс пагинации flibusta в общий колбэк.
-      // royallib — вторичный источник параллельно flibusta. Книги, которых нет
-      // во flibusta (по title|author), добираем ниже. Упал/завис — просто [].
+      // UNION: LLM parse and deterministic split-search — in parallel.
+      // split covers cases where the LLM misses (author-only, messy
+      // real queries) and backs up an LLM outage. Each pool is
+      // scored by its own parse; a book enters the shared pool with the max of its scores
+      // — the "best scenario" of finding it. ~80% rel@3 vs 69% for LLM-solo.
+      // The adapter forwards flibusta pagination progress into the shared callback.
+      // royallib — a secondary source in parallel with flibusta. Books missing
+      // from flibusta (by title|author) are picked up below. If it fails/hangs — just [].
       const [llmRaw, splitRaw, royRaw] = await Promise.all([
         deadline(flibusta
           .searchBooks(searchParsed, (fp) => onProgress?.(fp), { targetTitle: pt }))
@@ -273,22 +273,22 @@ export function createOrchestrator(
           : Promise.resolve([] as FlibustaBook[]),
       ]);
 
-      // При равной релевантности — популярное издание (больше скачиваний) выше.
+      // On equal relevance — the more popular edition (more downloads) goes higher.
       const dl = (b: FlibustaBook): number =>
         parseInt(String(b.downloadsCount ?? "").replace(/\D/g, "")) || 0;
       const pool = new Map<string, { b: FlibustaBook; s: number }>();
       const merge = (b: FlibustaBook, s: number): void => {
-        // Дедуп по id книги: одно и то же издание из LLM- и split-пула берём с
-        // максимумом оценок. Fallback на title|author, если id не извлёкся.
+        // Dedup by book id: the same edition from the LLM and split pools is taken with the
+        // max of its scores. Fallback to title|author when no id was extracted.
         const k = b.id != null ? `id:${b.id}` : norm(b.title) + "|" + norm(b.author ?? "");
         const ex = pool.get(k);
         if (!ex || s > ex.s) pool.set(k, { b, s });
       };
-      // Ключи flibusta-книг (title|фамилия автора) — для дедупа royallib: одна и та
-      // же книга не должна показываться дважды (из flibusta и из royallib). flibusta
-      // приоритетна (у неё точнее id-дедуп и полнее метаданные). Фамилия, а не полное
-      // имя: flibusta пишет «Гончаров Иван Александрович», royallib — «Гончаров Иван»,
-      // точное сравнение имени не ловило бы дубль, а фамилия (первый токен) совпадает.
+      // Keys of flibusta books (title|author surname) — for royallib dedup: the same
+      // book must not be shown twice (from flibusta and from royallib). flibusta
+      // takes priority (more precise id dedup and fuller metadata). Surname, not full
+      // name: flibusta writes "Goncharov Ivan Aleksandrovich", royallib — "Goncharov Ivan",
+      // so exact full-name comparison would miss the duplicate, while the surname (first token) matches.
       const flKeyOf = (b: FlibustaBook): string => {
         const fam = norm(b.author ?? "").split(" ").find(Boolean) ?? "";
         return norm(b.title) + "|" + fam;
@@ -298,26 +298,26 @@ export function createOrchestrator(
         flKey.add(flKeyOf(b));
         merge(b, relevance(pt, authors, parsed.series, b));
       }
-      // split-книги ранжируем по LLM-авторам, когда LLM их дал: это единая правда
-      // об авторе запроса. Разбиение split («александр») иначе матчит чужих
-      // авторов по совпадению имени и пропускает книги о Пушкине авторов-Александров.
-      // Без LLM-авторов (title-only, degraded) — по разбиению split, как раньше.
+      // split books are ranked by the LLM authors when the LLM gave them: that's the single
+      // truth about the query's author. Otherwise a split ("alexandr") matches wrong
+      // authors by first name and lets through books about Pushkin by authors named Aleksandr.
+      // Without LLM authors (title-only, degraded) — by the split, as before.
       for (const r of splitRaw) {
         flKey.add(flKeyOf(r.book));
         const ra = authors.length ? authors : r.authors;
         merge(r.book, relevance(r.pt, ra, undefined, r.book));
       }
-      // royallib добирает то, чего нет во flibusta: тот же title|author — пропуск.
+      // royallib adds what flibusta lacks: same title|author — skip.
       for (const b of royRaw) {
         if (flKey.has(flKeyOf(b))) continue;
         merge(b, relevance(pt, authors, parsed.series, b));
       }
 
       if (!pool.size) {
-        // Пустой результат кэшируем коротко (emptyTtlMs): «ничего нет» может быть
-        // и легитимным (опечатка, несуществующая книга), и сбоем источника — мы их
-        // не различаем. Короткий TTL гасит повторный мусор, но не превращает
-        // временную недоступность Flibusta в 6-часовой отказ.
+        // Empty results are cached briefly (emptyTtlMs): "nothing found" can be
+        // legitimate (typo, nonexistent book) or a source outage — we don't
+        // distinguish them. The short TTL dampens repeated junk but doesn't turn
+        // temporary Flibusta unavailability into a 6-hour refusal.
         cachePut(key, { books: [], degraded }, emptyTtlMs);
         return { books: [], degraded };
       }
@@ -325,20 +325,20 @@ export function createOrchestrator(
       onProgress?.({ kind: "ranking", count: pool.size });
       const scored = [...pool.values()].sort((a, z) => z.s - a.s || dl(z.b) - dl(a.b));
       const books = scored.slice(0, topN).map((x) => x.b);
-      // Мягкий порог: лучшее совпадение слабое — помечаем выдачу, но книги не режем.
-      // В degraded не применяется: там title = сырой запрос, score всегда низкий.
+      // Soft threshold: the best match is weak — flag the result, but don't cut books.
+      // Not applied in degraded mode: there title = raw query, score is always low.
       const bestScore = scored[0]?.s ?? 0;
       const lowRelevance = !degraded && bestScore < MIN_RELEVANCE;
       const result: SearchResult = lowRelevance
         ? { books, degraded, lowRelevance: true }
         : { books, degraded };
-      // Диагностика: слабая выдача (ни название, ни автор не попали) — видна в
-      // docker logs, чтобы отслеживать класс «почти не нашлось» после фикса.
+      // Diagnostics: weak results (neither title nor author hit) show up in
+      // docker logs to track the "barely found anything" class after the fix.
       if (lowRelevance) {
         console.warn(`lowRelevance query="${key}" bestScore=${bestScore} candidates=${scored.length}`);
       }
-      // Деградированный результат НЕ кэшируем: LLM мог отключиться временно,
-      // повторный запрос через минуту должен разобраться нормально.
+      // Degraded results are NOT cached: the LLM may be down temporarily;
+      // a retry a minute later should parse properly.
       if (!degraded) cachePut(key, result);
       return result;
     },
